@@ -997,6 +997,27 @@ code {
   box-shadow: var(--ring);
 }
 
+/* The pinned node. A filled left edge and a solid ring rather than the lift a hover gets:
+   lifting is a response to the pointer being there, and the whole point of this state is
+   that the pointer has gone. It also has to survive `.lit` and `.hit` landing on the same
+   element, hence the ring rather than a border colour those would overwrite. */
+.graph-node.selected {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-2), var(--edge-light), var(--ring);
+}
+
+.graph-node.selected::before {
+  opacity: 1;
+  width: 4px;
+}
+
+/* A pinned node is what the panel is about, so it stays legible even when a search has
+   ruled it out — otherwise clicking a node and then searching for something else leaves the
+   reference link describing a node faded to a third of its contrast. */
+.graph-node.selected.dim {
+  opacity: 0.75;
+}
+
 /* The nodes whose own text matched, as against the ones pulled in around them. Both are
    kept and both are legible; this says which ones you actually typed. */
 .graph-node.hit {

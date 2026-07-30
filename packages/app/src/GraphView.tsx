@@ -29,9 +29,31 @@ export function GraphView() {
   const setHighlight = useStore((s) => s.setHighlight)
   const setMask = useStore((s) => s.setMask)
   const [hovered, setHovered] = useState<string | null>(null)
+  /**
+   * The node that stays put when the pointer moves away.
+   *
+   * Added because the reference link below the canvas was unreachable. It followed the
+   * hover, and it is rendered outside `.graph-canvas` — so moving the cursor towards it left
+   * the canvas, cleared the hover, and unmounted the link on the way to clicking it. A link
+   * that vanishes when you reach for it is worse than no link, and the same went for reading
+   * a node's banded lines in the source: everything the graph told you was true only while
+   * you kept perfectly still.
+   */
+  const [selected, setSelected] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<Mode>('highlight')
   const [showEndpoints, setShowEndpoints] = useState(true)
+
+  /**
+   * Hover previews, selection persists, one rule for everything downstream.
+   *
+   * Deliberately not two rules. Having the neighbour highlight follow the pointer while the
+   * link and the band followed the selection was the first attempt, and it is defensible in
+   * a sentence and incoherent in the hand: three things on screen, moving to two different
+   * clocks. This way the graph always answers about ONE node, the pointer proposes it and a
+   * click keeps it, and letting go of the pointer falls back to what you kept.
+   */
+  const active = hovered ?? selected
 
   // Matching runs against the WHOLE graph, endpoint toggle or not. The toggle is about how
   // much of the drawing you want to look at; it is not a statement that endpoint addresses
@@ -94,16 +116,39 @@ export function GraphView() {
   // permanently broken-looking editor with no visible cause.
   useEffect(() => () => setMask(null), [setMask])
 
-  /** Everything one hop from the hovered node, plus the node itself. */
+  /** Everything one hop from the active node, plus the node itself. */
   const lit = useMemo(() => {
-    if (hovered === null) return null
-    const near = new Set<string>([hovered])
+    if (active === null) return null
+    const near = new Set<string>([active])
     for (const edge of layout.edges) {
-      if (edge.from === hovered) near.add(edge.to)
-      if (edge.to === hovered) near.add(edge.from)
+      if (edge.from === active) near.add(edge.to)
+      if (edge.to === active) near.add(edge.from)
     }
     return near
-  }, [hovered, layout.edges])
+  }, [active, layout.edges])
+
+  /**
+   * The band in the source, following the active node rather than the pointer.
+   *
+   * Driven from here rather than from the node's own mouse handlers, which is what it used
+   * to be. With a selection in play those handlers cannot get it right on their own: leaving
+   * a node has to clear the band only when nothing is pinned, and that is a question about
+   * state they do not have. One effect over the answer is both shorter and correct.
+   */
+  useEffect(() => {
+    const node = active === null ? undefined : graph.nodes.find((n) => n.id === active)
+    setHighlight(node ? { startLine: node.range.line, endLine: node.range.endLine } : null)
+  }, [active, graph, setHighlight])
+
+  // Same reasoning as the mask below: the editor is on screen whichever tab is showing, so a
+  // band left behind by a selection on a panel nobody can see is a mark on the source with
+  // no visible cause.
+  useEffect(() => () => setHighlight(null), [setHighlight])
+
+  // A selection is an id, and a new config is a new set of ids. Keeping it across an edit
+  // would pin a node that no longer exists — the link would go on pointing at a reference
+  // for something the config no longer contains.
+  useEffect(() => setSelected(null), [graph])
 
   if (graph.nodes.length === 0) {
     return (
@@ -131,8 +176,8 @@ export function GraphView() {
 
   const edgeState = (from: string, to: string) => {
     if (relevant !== null && (!relevant.has(from) || !relevant.has(to))) return 'dim'
-    if (hovered === null) return ''
-    return from === hovered || to === hovered ? 'lit' : 'dim'
+    if (active === null) return ''
+    return from === active || to === active ? 'lit' : 'dim'
   }
 
   return (
@@ -148,9 +193,20 @@ export function GraphView() {
             <div
               className="graph-canvas"
               style={{ width: layout.width, height: layout.height }}
-              onMouseLeave={() => {
-                setHovered(null)
-                setHighlight(null)
+              onMouseLeave={() => setHovered(null)}
+              // Clicking the canvas itself, not a node, lets go. Checked against the target
+              // rather than stopping propagation on the nodes, so a node's own click handler
+              // stays a plain handler and this stays the only place that knows about
+              // deselection.
+              onClick={(event) => {
+                if (event.target === event.currentTarget) setSelected(null)
+              }}
+              // Escape reaches here from whichever node has focus, which after a click is the
+              // node just selected. A window-level listener would have been simpler and would
+              // also have cleared the graph search, which has its own Escape and its own idea
+              // of what to clear.
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setSelected(null)
               }}
             >
               <svg className="graph-edges" width={layout.width} height={layout.height}>
@@ -194,19 +250,24 @@ export function GraphView() {
                   key={node.id}
                   className={`graph-node ${node.kind} ${node.problem ?? ''} ${nodeState(node.id)} ${
                     search?.matched.has(node.id) ? 'hit' : ''
-                  }`}
+                  } ${selected === node.id ? 'selected' : ''}`}
                   style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H }}
-                  onMouseEnter={() => {
-                    setHovered(node.id)
-                    // The node's range spans its whole block, so this bands the entire listener
-                    // or cluster rather than just the line its name is on.
-                    setHighlight({ startLine: node.range.line, endLine: node.range.endLine })
+                  // The band these drive spans the node's whole block, so hovering a listener
+                  // marks the entire listener rather than the line its name is on. Setting it
+                  // is the effect's job now; these only say what is under the pointer.
+                  onMouseEnter={() => setHovered(node.id)}
+                  onFocus={() => setHovered(node.id)}
+                  onMouseLeave={() => setHovered((current) => (current === node.id ? null : current))}
+                  onBlur={() => setHovered((current) => (current === node.id ? null : current))}
+                  // Clicking does both things it did, and pins. Scrolling the source to the
+                  // node is why anybody clicked one before this existed, and a click that
+                  // stopped doing it in exchange for a highlight would be a trade nobody
+                  // asked for. A second click on the same node lets go again.
+                  onClick={() => {
+                    setSelected((current) => (current === node.id ? null : node.id))
+                    revealLine(node.range.line)
                   }}
-                  onFocus={() => {
-                    setHovered(node.id)
-                    setHighlight({ startLine: node.range.line, endLine: node.range.endLine })
-                  }}
-                  onClick={() => revealLine(node.range.line)}
+                  aria-pressed={selected === node.id}
                   title={
                     node.problem === 'dangling'
                       ? `${node.label} — referred to, but not defined in this config`
@@ -222,19 +283,24 @@ export function GraphView() {
             </div>
 
             <p className="graph-key">
-              Hover a node to trace what it reaches and band it in the source.
+              Hover a node to trace what it reaches and band it in the source; click to keep it
+              there.
               <span className="key-swatch dangling" /> referred to, not defined here
               <span className="key-swatch orphan" /> nothing routes here
             </p>
           </>
         )}
 
-        {/* The reference for whatever is under the cursor. Envoy's docs are generated from the
-            protos and hard to navigate — landing on the right message is most of the value, so
-            the link follows the hover rather than making you go and find it. */}
-        {hovered !== null &&
+        {/* The reference for whatever the graph is currently about. Envoy's docs are generated
+            from the protos and hard to navigate — landing on the right message is most of the
+            value, so the link comes to you rather than making you go and find it.
+
+            It follows `active` and not `hovered`, which is the entire point of the selection
+            above: this element is a sibling of the canvas, so reaching for it was leaving the
+            canvas, and leaving the canvas was what unmounted it. */}
+        {active !== null &&
           (() => {
-            const node = layout.nodes.find((n) => n.id === hovered)
+            const node = layout.nodes.find((n) => n.id === active)
             const docs = node && docsForKind(node.kind)
             return docs ? (
               <p className="graph-doc">
