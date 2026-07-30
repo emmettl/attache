@@ -124,11 +124,25 @@ export function Findings() {
       )}
 
       {diagnostics.length === 0 ? (
-        <p className="muted">
-          Nothing wrong in the part of this config Attaché models. That is not the same as a
-          valid config — see the {unknowns.length} {unknowns.length === 1 ? 'field' : 'fields'}{' '}
-          below that it did not check.
-        </p>
+        unknowns.length > 0 ? (
+          <p className="muted">
+            Nothing wrong in the part of this config Attaché models. That is not the same as a
+            valid config — see the {unknowns.length}{' '}
+            {unknowns.length === 1 ? 'field' : 'fields'} below that it did not check.
+          </p>
+        ) : (
+          // Nothing left over at all, which happens on a config short enough to fit inside
+          // the subset. The sentence has to survive that without turning into the success
+          // state this panel has nowhere to put: reading all of a small config is still
+          // checking it against a fraction of Envoy, and the reason there is nothing below is
+          // that there was little above.
+          <p className="muted">
+            Nothing wrong in the part of this config Attaché models, and this time that was all
+            of it — every field here is one it reads. Still not a valid config: what Attaché
+            models is a subset of Envoy's schema, so a config that fits inside the subset has
+            been read in full and checked against a fraction.
+          </p>
+        )
       ) : shown.length === 0 ? (
         <p className="muted">{diagnostics.length} findings, none matching this filter.</p>
       ) : (
@@ -177,32 +191,40 @@ export function Findings() {
         </ul>
       )}
 
-      <details className="unknowns" open={diagnostics.length === 0 && !filtering}>
-        <summary>
-          {unknowns.length} {unknowns.length === 1 ? 'field' : 'fields'} Attaché did not check
-        </summary>
-        <p className="muted">
-          Attaché models the listener → filter chain → route → cluster spine, because that is
-          what decides where a request goes. Everything below is real Envoy configuration it
-          had no opinion about. Its being here is not a complaint about your config.
-        </p>
+      {/* Dropped whole when there is nothing in it, one level further out than the rule that
+          drops an empty group inside it. "0 fields Attaché did not check" is a green tick
+          with extra steps, and it was reaching the screen on any config whose fields all
+          happen to be modelled — including the bundled example built to demonstrate findings.
+          The panel that exists to keep the unchecked count visible was announcing a clean
+          bill of health in the one place this app must never put one. */}
+      {unknowns.length > 0 && (
+        <details className="unknowns" open={diagnostics.length === 0 && !filtering}>
+          <summary>
+            {unknowns.length} {unknowns.length === 1 ? 'field' : 'fields'} Attaché did not check
+          </summary>
+          <p className="muted">
+            Attaché models the listener → filter chain → route → cluster spine, because that is
+            what decides where a request goes. Everything below is real Envoy configuration it
+            had no opinion about. Its being here is not a complaint about your config.
+          </p>
 
-        <UnknownGroup
-          heading={`${unrecognised.length} ${unrecognised.length === 1 ? 'field' : 'fields'} unrecognised`}
-          blurb="Outside the model altogether. Attaché cannot tell you whether one of these is a corner of Envoy it has never modelled or a field name you have spelled wrong — only that nothing here asked for it."
-          unknowns={unrecognised}
-          revealLine={revealLine}
-          setHighlight={setHighlight}
-        />
+          <UnknownGroup
+            heading={`${unrecognised.length} ${unrecognised.length === 1 ? 'field' : 'fields'} unrecognised`}
+            blurb="Outside the model altogether. Attaché cannot tell you whether one of these is a corner of Envoy it has never modelled or a field name you have spelled wrong — only that nothing here asked for it."
+            unknowns={unrecognised}
+            revealLine={revealLine}
+            setHighlight={setHighlight}
+          />
 
-        <UnknownGroup
-          heading={`${unvalidated.length} read but not checked`}
-          blurb="Recognised, and deliberately left alone. Health checks, circuit breakers, the innards of a filter Attaché has already named for you — real configuration whose correctness is not a judgement this can make."
-          unknowns={unvalidated}
-          revealLine={revealLine}
-          setHighlight={setHighlight}
-        />
-      </details>
+          <UnknownGroup
+            heading={`${unvalidated.length} read but not checked`}
+            blurb="Recognised, and deliberately left alone. Health checks, circuit breakers, the innards of a filter Attaché has already named for you — real configuration whose correctness is not a judgement this can make."
+            unknowns={unvalidated}
+            revealLine={revealLine}
+            setHighlight={setHighlight}
+          />
+        </details>
+      )}
     </div>
   )
 }
