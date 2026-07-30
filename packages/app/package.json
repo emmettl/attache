@@ -1,6 +1,6 @@
 {
   "name": "@attache/app",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Attaché — an Envoy config workbench in the browser. Check a config, see what connects to what, and find out where a request actually goes. Run it with npx @attache/app.",
   "keywords": [
     "envoy",
@@ -52,7 +52,7 @@
   "//": "No runtime dependencies, deliberately. What ships is a prebuilt dist/ with everything already bundled into it — React, CodeMirror, @attache/core and its `yaml` — and a bin that serves it using nothing but Node built-ins. So `npx @attache/app` downloads one small package and runs, instead of resolving an install tree first. That is the whole point of the npx route: somebody with a production config full of private keys should be able to get a local tool up in one command, without it going anywhere near a website.",
   "//codemirror": "The individual @codemirror/* packages, NOT the `codemirror` convenience bundle \u2014 that one pulls in search, bracket matching and a full keymap whether or not you use them. Measured before taking it: this set is 408kB raw but 115kB gzipped, roughly doubling the app to ~220kB on the wire, which is unremarkable for a developer tool. The deciding factor was not syntax highlighting, which is a 3kB tokeniser, but autocompletion: doing that on a textarea means caret pixel measurement, popup positioning, keyboard interception, and insertion that does not destroy the undo stack. @codemirror/commands is not optional \u2014 without history() the editor would lose undo, which the textarea gave us for free. @codemirror/lint was added later and carries the diagnostic underline, the gutter markers and the hover, all of which were otherwise going to be hand-rolled against the same DOM. @codemirror/autocomplete came last, and is the dependency that justified taking CodeMirror in the first place \u2014 so it is the one this set was always going to end up carrying. Together the two take it to ~239kB gzipped.",
   "devDependencies": {
-    "@attache/core": "0.3.0",
+    "@attache/core": "0.4.0",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-yaml": "^6.1.3",

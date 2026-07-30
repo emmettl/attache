@@ -5,6 +5,7 @@
   "type": "module",
   "workspaces": [
     "packages/core",
+    "packages/cli",
     "packages/app"
   ],
   "scripts": {
@@ -15,7 +16,7 @@
     "test:watch": "vitest",
     "preview": "npm run preview --workspace @attache/app",
     "start": "npm run start --workspace @attache/app",
-    "typecheck": "tsc -b packages/core packages/app"
+    "typecheck": "tsc -b packages/core packages/cli packages/app"
   },
   "devDependencies": {
     "oxlint": "^1.71.0",

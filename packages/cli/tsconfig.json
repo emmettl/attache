@@ -1,0 +1,30 @@
+{
+  // Type-checking config: the same as the build, but it also covers the tests, which the
+  // published output must not contain.
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vitest/globals"],
+
+    // Out of `dist`, and not merely for tidiness. The root type-check runs `tsc -b` over
+    // this config, and `-b` writes its build info next to `outDir` even under `noEmit` — so
+    // without this the published tarball carried an 11 kB record of the last type-check.
+    "tsBuildInfoFile": "../../node_modules/.tmp/tsconfig.cli.tsbuildinfo",
+
+    // Widened from the build config's `./src`, and only because the `paths` below bring the
+    // core's source into this program. `rootDir` is enforced even under `noEmit`, so leaving
+    // it narrow makes every file of the core an error about being in the wrong directory.
+    // Nothing is emitted from here, so the value is inert beyond satisfying that check.
+    "rootDir": "../..",
+
+    // Resolve @attache/core to its SOURCE, matching the alias in vitest.config.ts and what
+    // the app does for the same reason: `tsc -b` on a fresh checkout should not fail until
+    // the core has been built. It belongs here rather than in the build config because
+    // nothing is emitted from this one — see the note there.
+    "paths": {
+      "@attache/core": ["../core/src/index.ts"]
+    }
+  },
+  "include": ["src"],
+  "exclude": []
+}
