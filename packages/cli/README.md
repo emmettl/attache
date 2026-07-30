@@ -52,11 +52,74 @@ part it did not check sitting next to it. `--show-unchecked` lists them rather t
 
 It is not a substitute for booting Envoy against the file.
 
+## Assert where a request goes
+
+The other half, and the one a validator structurally cannot do. `envoy --mode validate`
+tells you Envoy will accept the file. It cannot tell you the file still sends `/v1/users` to
+`api_service`, because answering that means walking the cascade rather than checking the
+schema — and a config stays perfectly valid through the edit that quietly moves a route
+below a broader one.
+
+```bash
+attache route envoy.yaml --authority api.example.com --path /v1/users \
+  --expect-cluster api_service
+```
+
+```
+GET api.example.com/v1/users
+Matched route 2 (`v1`) of `api` → cluster `api_service`.
+
+listener
+  ✓ ingress 0.0.0.0:8080
+filter chain
+  ✓ chain 1
+virtual host
+  ✓ api api.example.com
+  · catchall * — `api.example.com` on `api` is more specific than `*`
+route
+  · health path /healthz — the path is not exactly `/healthz`
+  ✓ v1 prefix /v1
+
+✓ cluster api_service, as expected
+```
+
+Every candidate that lost is there with the reason, because "it went to the wrong place" is
+almost never a question about the winner.
+
+`--expect-outcome` asserts the shape of the answer rather than the upstream, which is how you
+guard a path that is *supposed* to 404:
+
+```bash
+attache route envoy.yaml --authority api.example.com --path /admin \
+  --expect-outcome no-route
+```
+
+With no `--expect-*` it is a question rather than a test: it prints where the request goes
+and exits 0 however that turned out. A 404 is an answer.
+
+**Where it cannot be sure, it says so and the assertion says so too.** A weighted split, a
+cluster taken from a header, a route matching on `runtime_fraction`, a chain matching on IP
+ranges — an expectation that holds against any of those prints its caveats *above* the tick,
+and under GitHub Actions raises a warning on the diff, so a green check never quietly means
+"about half the time".
+
+| | |
+|---|---|
+| `--authority <host>` | The `:authority` header. Required. |
+| `--path </p>` | Default `/` |
+| `--method <verb>` | Default `GET` |
+| `--port <n>` | Only needed when the config has more than one listener. |
+| `--sni <name>` | For chain selection on a TLS listener. |
+| `-H, --header <n: v>` | Repeatable. Split on the first colon. |
+| `--expect-cluster <name>` | Fail unless the request reaches this cluster. |
+| `--expect-outcome <name>` | `matched`, `no-route`, `no-virtual-host`, `tcp-proxy`, … |
+
 ## Usage
 
 ```
 attache check <file...> [options]
 cat envoy.yaml | attache check -
+attache route <file> --authority <host> [options]
 ```
 
 Bootstraps and admin-port `/config_dump`s both work. Nothing is uploaded: this runs in your
@@ -96,6 +159,23 @@ history, so "this listener has had no router filter for four months" becomes ans
 
 Anywhere else, `--format json` is a versioned shape (`schema: attache-findings-1`) carrying
 every finding with its line, its config path, its documentation URL, and the unchecked counts.
+`attache route --format json` is `attache-route-1` alongside it, with the full cascade.
+
+Route assertions are ordinary shell, so a table of them is a table:
+
+```yaml
+- name: Routes still go where we think
+  run: |
+    set -e
+    attache() { npx @attache/cli route envoy.yaml --authority "$1" --path "$2" "${@:3}"; }
+    attache api.example.com /v1/users  --expect-cluster api_service
+    attache api.example.com /healthz   --expect-outcome matched
+    attache api.example.com /admin     --expect-outcome no-route
+    attache www.example.com /          --expect-cluster web_service
+```
+
+Each run re-reads the config, which for a file this size is a few milliseconds — cheaper
+than inventing a test-file format for it.
 
 ## The rest of Attaché
 
