@@ -1211,6 +1211,18 @@ code {
 
 .dialogue p {
   margin: 0 0 0.5rem;
+  /*
+    The share warning names the field the key is in, and a config path is one unbroken token
+    a hundred and thirty characters long. Without this it did not wrap: it ran 436px out of a
+    449px paragraph, took the document's scroll width to 1806px inside a 1400px window, and
+    left the reader a sideways scrollbar and a sentence ending in `transport_socket.typed_`.
+    On the one dialogue whose entire job is showing somebody what is about to travel.
+
+    `anywhere` rather than `break-all`, which the findings list uses: there the whole element
+    IS a path, here it is a sentence with a path in it, and `break-all` would hyphenate the
+    ordinary words around it.
+  */
+  overflow-wrap: anywhere;
 }
 
 .dialogue input {
