@@ -29,7 +29,7 @@
   },
   "//bin": "The same command name as @attache/app, and that is not an oversight. They are two halves of one tool — `npx @attache/app` opens the workbench, `npx @attache/cli check` is the same checks without a browser — and both spellings naming `attache` is what makes that read as one tool rather than two products. npx names the package explicitly, so the only case where it matters is installing both globally, where the later install wins.",
   "bin": {
-    "attache": "./bin/attache.js"
+    "attache": "bin/attache.js"
   },
   "//engines": "A floor, not a support statement. CI builds and tests on 24.",
   "engines": {

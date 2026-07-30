@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'vitest'
-import { MAX_SPLIT, MIN_SPLIT, clampSplit, parseHeaders, toTestRequest } from './store.js'
+import {
+  MAX_SPLIT,
+  MIN_SPLIT,
+  clampSplit,
+  headerNotes,
+  parseHeaders,
+  toTestRequest,
+} from './store.js'
 
 // The store's pure half.
 //
@@ -46,6 +53,74 @@ describe('reading the headers box', () => {
 
   test('a repeated name keeps the last, as a map must', () => {
     expect(parseHeaders('x-a: 1\nx-a: 2')).toEqual({ 'x-a': '2' })
+  })
+
+  test('an indented pseudo-header is dropped too, not stored under an empty name', () => {
+    // The colon was located in the raw line rather than the trimmed one, so two spaces in
+    // front of `:method` moved it off index 0 and the line stopped looking like a
+    // pseudo-header. It became an ordinary header whose name trimmed to `""` — a header
+    // that cannot match anything, occupying the map, reported nowhere.
+    expect(parseHeaders('  :method: POST')).toEqual({})
+    expect(headerNotes('  :method: POST')).toHaveLength(1)
+  })
+})
+
+describe('saying which header lines were ignored', () => {
+  test('nothing to say about lines that were read', () => {
+    expect(headerNotes('x-canary: yes\n\n  \nx-tier: gold')).toEqual([])
+  })
+
+  test('a pseudo-header names the field that does read it', () => {
+    // The whole point: `:method: POST` used to vanish, and a verdict that did not move was
+    // indistinguishable from a `:method` matcher the tester had failed to honour.
+    const [note] = headerNotes(':method: POST')
+    expect(note).toContain(':method')
+    expect(note).toContain('the Method field')
+  })
+
+  test('each of the three fields is named by its own label', () => {
+    expect(headerNotes(':authority: elsewhere.example')[0]).toContain('the :authority field')
+    expect(headerNotes(':path: /v1')[0]).toContain('the :path field')
+  })
+
+  test('a pseudo-header with no field says so rather than pointing at one', () => {
+    const [note] = headerNotes(':scheme: https')
+    expect(note).toContain(':scheme')
+    expect(note).not.toContain('field above')
+    expect(note).toContain('models no other pseudo-header')
+  })
+
+  test('a bare pseudo-header with no value is still named correctly', () => {
+    expect(headerNotes(':authority')[0]).toContain('`:authority`')
+  })
+
+  test('a line with no colon says what a header line looks like', () => {
+    expect(headerNotes('nonsense')[0]).toContain('`name: value`')
+  })
+
+  test('every ignored line gets its own note, in order', () => {
+    expect(headerNotes(':method: POST\nx-real: 1\nnonsense')).toHaveLength(2)
+  })
+
+  test('the notes and the parse never disagree about a line', () => {
+    // They share one reader precisely so this holds. A note claiming a line was ignored
+    // while the header quietly went through would send somebody hunting for a header they
+    // had been told was absent — worse than the silence this replaced.
+    const lines = [
+      'x-canary: yes',
+      ':method: POST',
+      '  :path: /v1',
+      'nonsense',
+      '',
+      '   ',
+      'x-empty:',
+      ':scheme: https',
+      'X-Mixed-Case : Yes',
+    ]
+    const kept = Object.keys(parseHeaders(lines.join('\n'))).length
+    const ignored = headerNotes(lines.join('\n')).length
+    const blank = lines.filter((l) => l.trim() === '').length
+    expect(kept + ignored + blank).toBe(lines.length)
   })
 })
 

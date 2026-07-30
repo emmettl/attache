@@ -1098,6 +1098,27 @@ code {
   box-shadow: var(--ring);
 }
 
+/* The lines the headers box ignored. Toned as a remark rather than an error — nothing is
+   wrong with the config, and the reader typed something reasonable that this tester reads
+   somewhere else. It is placed under the box it is about, not with the verdict below, so
+   it reads as a note on the input rather than a caveat on the answer. */
+.request-form .header-notes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.76rem;
+  color: var(--ink-soft);
+}
+
+.request-form .header-notes li {
+  /* A header name is one unbroken token, and in a column this narrow it is the thing most
+     likely to push the panel sideways. */
+  overflow-wrap: anywhere;
+}
+
 .verdict {
   padding: 0.6rem 0.75rem;
   border-radius: 9px;
@@ -1311,5 +1332,35 @@ code {
 
   .request-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The header bar is why a phone got a sideways scrollbar across the whole document.
+     It is a flex row of two things that both refuse to shrink — a title carrying a
+     tagline and a version pill, and a row of five buttons — so its min-content width
+     was 759px. Every viewport narrower than that scrolled the PAGE sideways rather than
+     the pane the content was in: the title slid off the left edge, and a dialogue
+     anchored to the buttons opened partly off-screen because the buttons themselves
+     were. This media query already stacked the panes below the bar and never touched
+     the bar itself.
+
+     Wrapping rather than shrinking, because the alternative is a row of buttons whose
+     labels are ellipsised, and each of these labels is the only thing saying what the
+     button does. */
+  .bar {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+
+  .actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* The tagline is prose, and the only part of the header that is: the h1 still reads
+   "Attaché" and the document title still says what this is. On a screen this narrow the
+   line it costs is better spent on the buttons, which are not decoration. */
+@media (max-width: 560px) {
+  .tagline {
+    display: none;
   }
 }
