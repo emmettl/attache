@@ -69,6 +69,8 @@ export class Cursor {
   private touched = false
   /** Whether the builder gave up on this node deliberately. */
   private wholesale = false
+  /** Whether this node is the wrong SHAPE, and already has a diagnostic saying so. */
+  private misshapen = false
 
   constructor(ctx: Context, node: Node | null, path: ConfigPath, key: string) {
     this.ctx = ctx
@@ -193,10 +195,42 @@ export class Cursor {
     return found
   }
 
-  /** Sequence items. An empty list for anything that is not a sequence. */
+  /**
+   * Sequence items.
+   *
+   * A MAP here is called out rather than treated as empty. Envoy's repeated fields are
+   * written as YAML lists, and the commonest way to get one wrong is to leave off the `- `
+   * on the first entry — at which point `filter_chains:` becomes a mapping of the first
+   * chain's fields, Envoy rejects the config, and every tool downstream reports the far
+   * less useful "no filter chains".
+   *
+   * This was found on a real config, where the honest-but-unhelpful message sent somebody
+   * looking for a missing block that was in fact sitting right there with a hyphen missing.
+   */
   items(): Cursor[] {
     this.touched = true
     if (this.itemsCache) return this.itemsCache
+
+    if (isMap(this.node)) {
+      const fields = this.entries()
+        .slice(0, 3)
+        .map((e) => `\`${e.raw}\``)
+        .join(', ')
+      this.ctx.diagnostics.push({
+        severity: 'error',
+        code: 'expected-list',
+        message: `\`${formatPath(this.path)}\` is a list, and this is a single block.`,
+        detail: `Envoy expects a sequence here. Almost always this is a missing \`- \` in front of the first field${fields ? ` — the block starting ${fields}` : ''}. As written, Envoy will refuse the config.`,
+        path: this.path,
+        range: this.range,
+      })
+      // The fields inside are not unrecognised, they are misplaced, and the finding above
+      // already says so. Listing them again as unmodelled would bury it.
+      this.misshapen = true
+      this.itemsCache = []
+      return this.itemsCache
+    }
+
     const out: Cursor[] = []
     if (isSeq(this.node)) {
       this.node.items.forEach((item, index) => {
@@ -330,7 +364,7 @@ export class Cursor {
    * covered by the finding for the node itself.
    */
   collectUnknowns(into: Unknown[] = []): Unknown[] {
-    if (this.node === null) return into
+    if (this.node === null || this.misshapen) return into
 
     if (this.wholesale || !this.touched) {
       // Scalars are values, not structure. Reporting `stat_prefix: ingress_http` as an

@@ -153,3 +153,79 @@ static_resources:
     expect(model.clusters[0]!.type).toBe('STRICT_DNS')
   })
 })
+
+describe('a repeated field written as a single block', () => {
+  // Envoy's repeated fields are YAML lists, and the commonest way to get one wrong is to
+  // leave the `- ` off the first entry. Found on a real config, where the old message —
+  // "this listener has no filter chains" — sent somebody looking for a missing block that
+  // was sitting right there with a hyphen missing.
+  const MISSING_DASH = `
+static_resources:
+  listeners:
+  - name: https_listener
+    address: { socket_address: { address: 0.0.0.0, port_value: 443 } }
+    filter_chains:
+      transport_socket: { name: envoy.transport_sockets.tls }
+      filters: []
+  clusters: []
+`
+
+  const { diagnostics, unknowns } = analyse(MISSING_DASH)
+
+  test('is reported as the shape problem it is', () => {
+    const found = diagnostics.find((d) => d.code === 'expected-list')!
+    expect(found.severity).toBe('error')
+    expect(formatPath(found.path)).toBe('static_resources.listeners[0].filter_chains')
+    expect(found.detail).toContain('missing `- `')
+    // Names what it found, so you can see it is your block rather than a missing one.
+    expect(found.detail).toContain('transport_socket')
+  })
+
+  test('and the misplaced fields are not also called unrecognised', () => {
+    // They are misplaced, not unknown, and the finding above already says so.
+    expect(unknowns.map((u) => formatPath(u.path))).toEqual([])
+  })
+
+  test('and the consequence of it is suppressed', () => {
+    // "This listener has no filter chains" is true, derivative and misleading. Reporting a
+    // cause and its symptom as peers is how a tool teaches people to skim past findings.
+    expect(diagnostics.map((d) => d.code)).not.toContain('no-filter-chains')
+    expect(diagnostics).toHaveLength(1)
+  })
+
+  test('the same mistake inside a TLS context reads the same way', () => {
+    const found = analyse(`
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 443 } }
+    filter_chains:
+    - transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              certificate_chain: { filename: /c.pem }
+              private_key: { filename: /k.pem }
+      filters: []
+  clusters: []
+`).diagnostics
+    expect(found.map((d) => d.code)).toContain('expected-list')
+    expect(found.map((d) => d.code)).not.toContain('tls-without-certificate')
+  })
+
+  test('a properly written list is untouched', () => {
+    expect(
+      analyse(`
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 443 } }
+    filter_chains:
+    - filters: []
+  clusters: []
+`).diagnostics.map((d) => d.code),
+    ).not.toContain('expected-list')
+  })
+})

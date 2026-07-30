@@ -1,4 +1,4 @@
-import { summarise, type Diagnostic, type Unknown } from './diagnostics.js'
+import { summarise, type Diagnostic, type DiagnosticCode, type Unknown } from './diagnostics.js'
 import { buildModel } from './model.js'
 import { parse, type ConfigFormat } from './parse.js'
 import type { ConfigModel } from './types.js'
@@ -72,12 +72,42 @@ export interface Analysis {
  * parser recovered. That is deliberate — a config being edited is broken most of the time,
  * and a tool that goes blank at the first stray colon is a tool you close.
  */
+/**
+ * Findings that only exist because of another finding, removed.
+ *
+ * A `filter_chains` written as a mapping instead of a list produces two: the shape problem,
+ * and then "this listener has no filter chains" — which is technically true, entirely
+ * derivative, and actively misleading, because it sends somebody looking for a missing
+ * block that is sitting right there with a hyphen missing. Reporting the cause and its
+ * symptom side by side as peers is how a tool teaches people to skim past it.
+ *
+ * Keyed on containment: a consequence is dropped when a shape error sits somewhere beneath
+ * the thing it is complaining about.
+ */
+const CONSEQUENCES = new Set<DiagnosticCode>(['no-filter-chains', 'tls-without-certificate'])
+
+function suppressConsequences(all: Diagnostic[]): Diagnostic[] {
+  const shapeErrors = all.filter((d) => d.code === 'expected-list')
+  if (shapeErrors.length === 0) return all
+
+  const under = (inner: readonly (string | number)[], outer: readonly (string | number)[]) =>
+    inner.length > outer.length && outer.every((part, i) => inner[i] === part)
+
+  return all.filter(
+    (d) => !CONSEQUENCES.has(d.code) || !shapeErrors.some((shape) => under(shape.path, d.path)),
+  )
+}
+
 export function analyse(text: string): Analysis {
   const parsed = parse(text)
   const { model, diagnostics: structural, unknowns } = buildModel(parsed)
   const referential = validate(model)
 
-  const diagnostics = [...parsed.diagnostics, ...structural, ...referential]
+  const diagnostics = suppressConsequences([
+    ...parsed.diagnostics,
+    ...structural,
+    ...referential,
+  ])
 
   return {
     format: parsed.format,

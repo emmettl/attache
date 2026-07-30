@@ -21,6 +21,7 @@ export type DiagnosticCode =
   | 'bad-enum'
   | 'missing-required'
   | 'empty-list'
+  | 'expected-list'
   // references
   | 'cluster-not-found'
   | 'cluster-unused'
