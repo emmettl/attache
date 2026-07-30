@@ -589,6 +589,15 @@ code {
   color: var(--ink-soft);
 }
 
+/* A path four levels into a typed_config is longer than this panel is wide, and without
+   this it pushed its own line reference off the edge — so the entries that most needed
+   somewhere to jump to were the ones with no visible way to jump. */
+.unknown-list code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
 .unknown-list button:hover code {
   color: var(--accent);
 }
