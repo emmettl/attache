@@ -180,6 +180,28 @@ npm run lint && npm run typecheck && npm test && npm run build
 
 `npm start` serves the built bundle the way `npx` does.
 
+### Two test projects
+
+`npm test` runs both. Most of the suite is Node — the core, the CLI, and the app's own pure
+logic — and `npm run test:node` is that alone, for the inner loop.
+
+The rest runs in **real Chromium**, and needs one setup step:
+
+```bash
+npx playwright install chromium
+```
+
+That project exists because a headless DOM cannot see the bugs this app actually had.
+Neither `jsdom` nor `happy-dom` computes layout: `getBoundingClientRect` returns zeros, there
+is no box model, and no CSS cascade. Three of the app's shipped bugs were exactly that shape
+— a share warning that ran 436px out of its dialogue and took the document to an 1806px
+scroll width, a Tab that walked out of a dialogue into the editor behind it, and a graph node
+marked but left off screen. A suite that goes green while being structurally unable to see
+its own failure mode is worse than no suite.
+
+It is Vite's own dev server driving Chromium rather than a second test runner: the same
+config, the same aliases, the same `npm test`.
+
 ### One build, every destination
 
 `packages/app/vite.config.ts` sets `base: './'`, so a single `dist/` serves the Pages

@@ -32,3 +32,8 @@ packages/core/src/**/*.map
 *.sw?
 .claude
 *.tgz
+
+# Vitest browser mode: the screenshot it saves on a failing browser test, and the attachment
+# directory it stages them through. Both are output from a run, not part of the repo.
+__screenshots__/
+.vitest-attachments/

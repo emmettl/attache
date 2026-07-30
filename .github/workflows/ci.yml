@@ -15,6 +15,13 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+
+      # The browser project drives real Chromium, because three of this app's bugs were
+      # layout and focus problems that no headless DOM can see. Only Chromium, and only its
+      # own dependencies — the full `playwright install` fetches three engines this repo
+      # does not test in.
+      - run: npx playwright install --with-deps chromium
+
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
