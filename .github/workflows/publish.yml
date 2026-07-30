@@ -78,16 +78,47 @@ jobs:
             exit 1
           fi
 
-      # No NODE_AUTH_TOKEN. Both packages are published by a TRUSTED PUBLISHER — npm
-      # trades the `id-token: write` identity above for a short-lived credential, so there
-      # is no long-lived secret in this repo to leak, rotate or forget. Leaving a stale
-      # token in the environment would be worse than useless: npm prefers an explicit
-      # token over OIDC, so a revoked one turns a working release into a 401.
+      # Two ways to authenticate, and which one runs is decided by whether the NPM_TOKEN
+      # secret exists. That is deliberate: it makes switching between them a matter of
+      # adding or deleting a secret, with no second edit to this file to forget.
+      #
+      # TRUSTED PUBLISHING (the destination) is the tokenless one. npm trades the
+      # `id-token: write` identity above for a short-lived credential, so there is no
+      # long-lived secret in the repo to leak, rotate or forget.
+      #
+      # A TOKEN is needed exactly once, to get there. npm will not let you configure a
+      # trusted publisher for a package that does not exist yet — the settings page needs
+      # something to attach to — and `npm trust` does not help, because it has the same
+      # requirement AND refuses granular tokens that bypass 2FA. So the first version of a
+      # brand-new package has to be pushed with a credential, and every version after it
+      # can be OIDC.
+      #
+      # AFTER THE FIRST RELEASE: configure the trusted publisher on npmjs.com for both
+      # packages, then DELETE the NPM_TOKEN secret. Deleting it is the whole switch. Do not
+      # leave it sitting there once trusted publishing is on — npm prefers an explicit
+      # token over OIDC, so the day that token expires or is revoked it stops being
+      # redundant and starts being the reason a release returns 401.
       - name: Publish
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            echo "::notice::NPM_TOKEN is set — publishing with a token (bootstrap mode). Remove the secret once trusted publishing is configured."
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+          else
+            # setup-node writes `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` into
+            # ~/.npmrc whether or not a token exists. With no token that line expands to an
+            # EMPTY credential, and npm presents it rather than falling through to the OIDC
+            # exchange — an empty string is still an answer to "do you have a token?".
+            # Removing the line leaves npm with no credential at all, which is the state
+            # trusted publishing is looking for.
+            echo "::notice::No NPM_TOKEN — publishing via OIDC trusted publishing."
+            sed -i '/_authToken/d' "$HOME/.npmrc" 2>/dev/null || true
+          fi
+
           published_any=0
 
           for pkg in core app; do
