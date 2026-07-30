@@ -17,9 +17,9 @@
   --ok: #197a4b;
 
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-  /* Named because the lint tooltip needs it: it renders inside the editor, which sets
-     `--mono` on everything, and prose in a monospace box reads like output rather than like
-     a sentence somebody wrote. */
+  /* Named because the lint tooltip and the completion popup both need it: each renders
+     inside the editor, which sets `--mono` on everything, and prose in a monospace box reads
+     like output rather than like a sentence somebody wrote. */
   --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --line-height: 20px;
 

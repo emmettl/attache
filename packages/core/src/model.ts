@@ -1,5 +1,16 @@
 import type { Cursor } from './cursor.js'
 import { cursorOver } from './cursor.js'
+// The enum members live beside the suggestions that offer them. Two lists would drift, and
+// a menu proposing a value this file then rejects is the tool arguing with itself.
+import {
+  API_TYPES,
+  CLUSTER_TYPES,
+  CODEC_TYPES,
+  REDIRECT_RESPONSE_CODES,
+  SERVER_HEADER_TRANSFORMATIONS,
+  TRAFFIC_DIRECTIONS,
+  UNDERSCORE_ACTIONS,
+} from './suggest.js'
 import type { Diagnostic, Unknown } from './diagnostics.js'
 import type { ParseResult } from './parse.js'
 import type {
@@ -285,15 +296,7 @@ function routeAction(c: Cursor): RouteAction {
       regexRewrite: regexRewrite(redirect.field('regexRewrite')),
       httpsRedirect: redirect.field('httpsRedirect')?.bool(),
       schemeRedirect: redirect.strAt('schemeRedirect'),
-      responseCode: redirect
-        .field('responseCode')
-        ?.enumOf([
-          'MOVED_PERMANENTLY',
-          'FOUND',
-          'SEE_OTHER',
-          'TEMPORARY_REDIRECT',
-          'PERMANENT_REDIRECT',
-        ] as const),
+      responseCode: redirect.field('responseCode')?.enumOf(REDIRECT_RESPONSE_CODES),
       stripQuery: redirect.field('stripQuery')?.bool(),
     }
   }
@@ -450,7 +453,7 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
   return {
     ...sourced(c),
     statPrefix: c.strAt('statPrefix'),
-    codecType: c.field('codecType')?.enumOf(['AUTO', 'HTTP1', 'HTTP2', 'HTTP3'] as const),
+    codecType: c.field('codecType')?.enumOf(CODEC_TYPES),
     routeConfig: inline ? routeConfig(inline) : undefined,
     rdsRouteConfigName: rds?.strAt('routeConfigName'),
     httpFilters: (c.field('httpFilters')?.items() ?? [])
@@ -467,12 +470,12 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
     idleTimeout: common?.strAt('idleTimeout'),
     headersWithUnderscoresAction: common
       ?.field('headersWithUnderscoresAction')
-      ?.enumOf(['ALLOW', 'REJECT_REQUEST', 'DROP_HEADER'] as const),
+      ?.enumOf(UNDERSCORE_ACTIONS),
     streamIdleTimeout: c.strAt('streamIdleTimeout'),
     requestTimeout: c.strAt('requestTimeout'),
     serverHeaderTransformation: c
       .field('serverHeaderTransformation')
-      ?.enumOf(['OVERWRITE', 'APPEND_IF_ABSENT', 'PASS_THROUGH'] as const),
+      ?.enumOf(SERVER_HEADER_TRANSFORMATIONS),
     http1: http1 && {
       acceptHttp10: http1.field('acceptHttp10')?.bool(),
       defaultHostForHttp10: http1.strAt('defaultHostForHttp10'),
@@ -669,7 +672,7 @@ function listener(c: Cursor): Listener {
     address: address ? socketAddress(address) : undefined,
     trafficDirection: c
       .field('trafficDirection')
-      ?.enumOf(['UNSPECIFIED', 'INBOUND', 'OUTBOUND'] as const),
+      ?.enumOf(TRAFFIC_DIRECTIONS),
     perConnectionBufferLimitBytes: c.numAt('perConnectionBufferLimitBytes'),
     listenerFilterNames: (c.field('listenerFilters')?.items() ?? [])
       .map((f) => {
@@ -704,13 +707,7 @@ function endpointsOf(c: Cursor): Endpoint[] {
 }
 
 function cluster(c: Cursor): Cluster {
-  const type = c.field('type')?.enumOf([
-    'STATIC',
-    'STRICT_DNS',
-    'LOGICAL_DNS',
-    'EDS',
-    'ORIGINAL_DST',
-  ] as const)
+  const type = c.field('type')?.enumOf(CLUSTER_TYPES)
   const eds = c.field('edsClusterConfig')
   const assignment = c.field('loadAssignment')
   const socket = c.field('transportSocket')
@@ -757,15 +754,6 @@ function cluster(c: Cursor): Cluster {
 }
 
 // ---- assembling -----------------------------------------------------------------
-
-const API_TYPES = [
-  'DEPRECATED_AND_UNAVAILABLE_DO_NOT_USE',
-  'REST',
-  'GRPC',
-  'DELTA_GRPC',
-  'AGGREGATED_GRPC',
-  'AGGREGATED_DELTA_GRPC',
-] as const
 
 /**
  * Which cluster an `ApiConfigSource` opens its stream to, if it says.

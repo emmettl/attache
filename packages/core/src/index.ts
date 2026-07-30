@@ -38,6 +38,7 @@ export {
   type Redaction,
   type Secret,
 } from './redact.js'
+export { suggestValues, type Suggestion } from './suggest.js'
 export {
   matchRequest,
   pathOnly,
