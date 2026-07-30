@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
-import { useStore } from './store.js'
+import { useEffect, useMemo } from 'react'
+import { headerNotes, useStore } from './store.js'
 
 // Ask a question about a request, get the decision and everything it beat.
 //
@@ -15,6 +15,8 @@ export function RouteTester() {
   const match = useStore((s) => s.match)
   const runMatch = useStore((s) => s.runMatch)
   const revealLine = useStore((s) => s.revealLine)
+
+  const notes = useMemo(() => headerNotes(request.headers), [request.headers])
 
   useEffect(() => {
     if (!match) runMatch()
@@ -59,6 +61,24 @@ export function RouteTester() {
             onChange={(e) => setRequest({ headers: e.target.value })}
           />
         </label>
+
+        {/*
+          The lines this box threw away. Dropping them is right — the pseudo-headers have
+          their own fields, and a second copy here could only disagree — but dropping them
+          in silence is what made `:method: POST` indistinguishable from the tester ignoring
+          a `:method` route matcher. One goes nowhere and says nothing; so does the other.
+
+          `aria-live`, because the notes appear as a consequence of typing somewhere else on
+          the page: a screen reader user gets no cue that anything arrived below the box
+          otherwise.
+        */}
+        {notes.length > 0 && (
+          <ul className="header-notes full" aria-live="polite">
+            {notes.map((note, i) => (
+              <li key={i}>{note}</li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {match && (

@@ -147,13 +147,91 @@ interface State {
   loadShared: () => Promise<boolean>
 }
 
-/** `name: value` per line. Blank lines and lines without a colon are skipped. */
+/**
+ * Which of the pseudo-headers the form already has a field for, and what that field is
+ * called on screen. `:scheme` is absent on purpose — nothing in the model matches on it,
+ * so pointing at a field that does not exist would be worse than saying so.
+ */
+const PSEUDO_FIELDS: Record<string, string> = {
+  ':authority': 'the :authority field',
+  ':path': 'the :path field',
+  ':method': 'the Method field',
+}
+
+/**
+ * The lines `parseHeaders` threw away, said out loud.
+ *
+ * Dropping them is correct — see the note on the pseudo-header case below — but doing it
+ * silently is not. Typing `:method: POST` in this box and watching the verdict not move is
+ * indistinguishable from the tester ignoring a `:method` route matcher, which is a bug this
+ * app has actually had. The line went nowhere and nothing said so, and the reasonable
+ * conclusion from that is that the matching is wrong rather than the input.
+ *
+ * Silence is the expensive part in a tool whose entire claim is that it admits what it did
+ * not do.
+ */
+export function headerNotes(raw: string): string[] {
+  const notes: string[] = []
+  for (const line of raw.split('\n')) {
+    const read = readHeaderLine(line)
+    if (read.kind !== 'ignored') continue
+
+    if (read.pseudo) {
+      // The form has its own Method, :authority and :path fields and `toTestRequest` fills
+      // all three from them, so a second copy arriving through here could only disagree
+      // with them — which is why a pseudo-header is dropped rather than merged.
+      const field = PSEUDO_FIELDS[read.text.toLowerCase()]
+      notes.push(
+        field === undefined
+          ? `\`${read.text}\` is ignored. Attaché matches on :method, :path and :authority, which have their own fields above, and models no other pseudo-header.`
+          : `\`${read.text}\` is ignored here — set it in ${field} above, which is where the tester reads it from.`,
+      )
+      continue
+    }
+
+    notes.push(`\`${read.text}\` is ignored: a header line needs a \`name: value\`.`)
+  }
+  return notes
+}
+
+type HeaderLine =
+  | { kind: 'blank' }
+  | { kind: 'header'; name: string; value: string }
+  | { kind: 'ignored'; text: string; pseudo: boolean }
+
+/**
+ * One reading of one line, used by BOTH `parseHeaders` and `headerNotes`.
+ *
+ * Shared rather than written twice, because the two must agree exactly: a note saying a
+ * line was ignored while the header quietly went through would be a worse failure than the
+ * silence it replaced — it would have somebody chasing a header they were told was absent.
+ */
+function readHeaderLine(line: string): HeaderLine {
+  const trimmed = line.trim()
+  if (trimmed === '') return { kind: 'blank' }
+
+  const cut = trimmed.indexOf(':')
+
+  // No colon at all: not a header line in any reading of it.
+  if (cut === -1) return { kind: 'ignored', text: trimmed, pseudo: false }
+
+  // A leading colon means a pseudo-header. Measured on the TRIMMED line, so that indenting
+  // one does not turn it into an ordinary header with an empty name — which is what the
+  // old `line.indexOf(':')` did with `  :method: POST`, storing a header called `""`.
+  if (cut === 0) {
+    const end = trimmed.indexOf(':', 1)
+    return { kind: 'ignored', text: end === -1 ? trimmed : trimmed.slice(0, end), pseudo: true }
+  }
+
+  return { kind: 'header', name: trimmed.slice(0, cut).trim().toLowerCase(), value: trimmed.slice(cut + 1).trim() }
+}
+
+/** `name: value` per line. Blank lines, pseudo-headers and lines without a colon are skipped. */
 export function parseHeaders(raw: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const line of raw.split('\n')) {
-    const cut = line.indexOf(':')
-    if (cut <= 0) continue
-    out[line.slice(0, cut).trim().toLowerCase()] = line.slice(cut + 1).trim()
+    const read = readHeaderLine(line)
+    if (read.kind === 'header') out[read.name] = read.value
   }
   return out
 }

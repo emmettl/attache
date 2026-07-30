@@ -193,11 +193,19 @@ npx playwright install chromium
 
 That project exists because a headless DOM cannot see the bugs this app actually had.
 Neither `jsdom` nor `happy-dom` computes layout: `getBoundingClientRect` returns zeros, there
-is no box model, and no CSS cascade. Three of the app's shipped bugs were exactly that shape
+is no box model, and no CSS cascade. Four of the app's shipped bugs were exactly that shape
 — a share warning that ran 436px out of its dialogue and took the document to an 1806px
-scroll width, a Tab that walked out of a dialogue into the editor behind it, and a graph node
-marked but left off screen. A suite that goes green while being structurally unable to see
-its own failure mode is worse than no suite.
+scroll width, a Tab that walked out of a dialogue into the editor behind it, a graph node
+marked but left off screen, and a header bar whose two halves both refused to shrink, giving
+the whole document a hard 759px minimum and every phone a sideways scrollbar. A suite that
+goes green while being structurally unable to see its own failure mode is worse than no
+suite.
+
+The narrow-screen tests carry that argument one level further: each asserts that nothing
+overflows a window of a given width, which is *also* true of a window that was never
+resized. So they check `window.innerWidth` first. A `page.viewport()` that quietly did
+nothing would otherwise leave three green tests measuring the 1280px default — the same
+failure, one layer up.
 
 It is Vite's own dev server driving Chromium rather than a second test runner: the same
 config, the same aliases, the same `npm test`.

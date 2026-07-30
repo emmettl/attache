@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { userEvent } from 'vitest/browser'
+import { page, userEvent } from 'vitest/browser'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { App } from './App.js'
 import { useStore } from './store.js'
@@ -224,5 +224,73 @@ describe('the graph marks the node the caret is in', () => {
       useStore.getState().setCaretLine(1)
     })
     expect(document.querySelectorAll('.graph-node.lit')).toHaveLength(0)
+  })
+})
+
+describe('narrow screens', () => {
+  // The viewport is 1280x800 for every other test in this file, because that is where the
+  // bugs they guard were found. These three set it deliberately and put it back.
+  afterEach(async () => {
+    await page.viewport(1280, 800)
+  })
+
+  const narrow = async (width: number) => {
+    await page.viewport(width, 800)
+    // A resize is not synchronous, and neither is the reflow it causes.
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+    // Checked, not assumed. Every assertion below is "nothing overflows a WIDTH-wide
+    // window", and that is also true of a window that never got resized — so a `viewport`
+    // that quietly did nothing would leave three green tests measuring the 1280px default.
+    // Precisely the failure this whole project exists to refuse: a suite structurally
+    // unable to see its own subject.
+    expect(window.innerWidth).toBe(width)
+  }
+
+  /** Anything sticking out past the right edge, or off the left. Reported by class so a
+      failure names the culprit rather than just the number. */
+  const overflowing = (width: number) =>
+    [...document.querySelectorAll('body *')]
+      .filter((el) => {
+        const box = el.getBoundingClientRect()
+        if (box.width === 0 && box.height === 0) return false
+        return box.right > width + 1 || box.left < -1
+      })
+      .map((el) => `${el.tagName.toLowerCase()}.${el.className}`)
+
+  test('the page does not scroll sideways on a phone', async () => {
+    // The header bar was a flex row of two things that both refused to shrink — a title
+    // with a tagline and a version pill, and five buttons — so the document had a hard
+    // minimum width of 759px. Every viewport under that scrolled the WHOLE PAGE sideways
+    // rather than the pane the config was in, and the title slid off the left edge.
+    //
+    // Not a bug a headless DOM could have found: it is entirely a question of what the
+    // boxes measured, and jsdom has no boxes.
+    await load(ROUTED)
+    await narrow(414)
+
+    expect(overflowing(414)).toEqual([])
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(414)
+  })
+
+  test('nor at the widths between a phone and the stacking breakpoint', async () => {
+    await load(ROUTED)
+    for (const width of [360, 500, 600, 760, 860]) {
+      await narrow(width)
+      expect({ width, over: overflowing(width) }).toEqual({ width, over: [] })
+    }
+  })
+
+  test('a dialogue opens inside the viewport rather than half off it', async () => {
+    // It is anchored to the buttons it belongs to, so while the buttons were off-screen it
+    // was too — on the one dialogue whose job is showing somebody what is about to travel.
+    await load(WITH_KEY)
+    await narrow(414)
+    await click(byText('.actions button', 'Share link'))
+
+    const box = document.querySelector('.dialogue')!.getBoundingClientRect()
+    expect(box.left).toBeGreaterThanOrEqual(0)
+    expect(box.right).toBeLessThanOrEqual(414)
   })
 })

@@ -84,6 +84,68 @@ jobs:
             exit 1
           fi
 
+      # Everything below this line asks one question: can EVERY package be published?
+      # It is asked before any of them is, because the publish loop runs under `set -e` and
+      # publishing is not a transaction. A package that cannot go out takes down every
+      # package after it in the loop and leaves the ones before it on the registry —
+      # @attache/core at 0.4.0, @attache/cli absent, @attache/app never attempted — and
+      # `npm unpublish` is heavily restricted after 72 hours, so that state is close to
+      # permanent. The remedy would be 0.4.1 for the two that failed, with a 0.4.0 core
+      # sitting there forever alongside a CLI that never had one.
+      #
+      # The check is cheap and the failure it prevents is not, so it runs on dry runs too:
+      # `workflow_dispatch` with dry_run is the rehearsal, and a rehearsal that skips the
+      # step most likely to fail is not rehearsing the release.
+      - name: Check every package can actually be published
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for pkg in core cli app; do
+            name=$(node -p "require('./packages/$pkg/package.json').name")
+
+            if out=$(npm view "$name" versions --json 2>&1); then
+              continue
+            fi
+
+            # An E404 means the package genuinely is not on the registry. Anything else —
+            # an outage, a proxy, a rate limit — must not be read as "brand new", because
+            # the two call for opposite responses: one needs a credential added, the other
+            # needs a retry in ten minutes. Guessing wrong here either blocks a release
+            # that was fine or waves through the one this step exists to stop.
+            if ! printf '%s' "$out" | grep -q 'E404'; then
+              echo "::error::Could not ask the registry about $name, and the answer decides whether this release can proceed. npm said: $out"
+              exit 1
+            fi
+
+            echo "::notice::$name is not on the registry yet — this release would be its first."
+            missing+=("$name")
+          done
+
+          # The one case that needs a credential. npm will not let a trusted publisher be
+          # configured for a package that does not exist (see the note on the publish step),
+          # so a brand-new package's first version cannot go out over OIDC. Without this
+          # check that arrives as a 404 from `npm publish` halfway down the loop.
+          if [ ${#missing[@]} -gt 0 ] && [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::${missing[*]} — not on the registry, and no NPM_TOKEN is set. A trusted publisher cannot be configured for a package that does not exist yet, so the first version of a new package has to be published with a credential. Add the NPM_TOKEN secret and re-run this release; then configure the trusted publisher for it on npmjs.com and delete the secret again."
+            exit 1
+          fi
+
+          # @attache/cli pins @attache/core to an exact version rather than a range, which
+          # is the right pin for two packages released together and the wrong one to get
+          # subtly out of step: bump the CLI, forget the core, and the CLI publishes fine
+          # and is then uninstallable, because the version it asks for does not exist. That
+          # failure surfaces on a stranger's `npx`, not in this workflow, which is why it is
+          # checked here.
+          PIN=$(node -p "require('./packages/cli/package.json').dependencies['@attache/core']")
+          CORE=$(node -p "require('./packages/core/package.json').version")
+          if [ "$PIN" != "$CORE" ] && ! npm view "@attache/core@$PIN" version > /dev/null 2>&1; then
+            echo "::error::@attache/cli depends on @attache/core@$PIN, which is neither the version in this repo ($CORE, which this release would publish) nor already on the registry. Installing the CLI would fail to resolve. Line the two up before releasing."
+            exit 1
+          fi
+
       # Two ways to authenticate, and which one runs is decided by whether the NPM_TOKEN
       # secret exists. That is deliberate: it makes switching between them a matter of
       # adding or deleting a secret, with no second edit to this file to forget.

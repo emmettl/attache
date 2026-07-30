@@ -11,12 +11,13 @@ import { playwright } from '@vitest/browser-playwright'
 //
 // The BROWSER project exists because a headless DOM cannot answer the questions that have
 // actually broken here. Neither jsdom nor happy-dom computes layout: `getBoundingClientRect`
-// returns zeros, there is no box model, and no CSS cascade. Three of this app's bugs were
+// returns zeros, there is no box model, and no CSS cascade. Four of this app's bugs were
 // exactly that shape — a share warning that ran 436px out of its dialogue and took the
 // document to a 1806px scroll width, a Tab that walked out of a dialogue into the editor
-// behind it, and a graph node marked but left off screen. A suite that goes green while
-// being structurally unable to see its own failure mode is worse than no suite, so the
-// tests for those run in a real browser.
+// behind it, a graph node marked but left off screen, and a header bar that gave the whole
+// document a hard 759px minimum width. A suite that goes green while being structurally
+// unable to see its own failure mode is worse than no suite, so the tests for those run in
+// a real browser.
 //
 // It is Vite's own dev server driving real Chromium, not a second test runner: the same
 // config, the same aliases, the same `npm test`.
@@ -52,9 +53,10 @@ export default defineConfig({
             enabled: true,
             provider: playwright(),
             headless: true,
-            // A laptop, not the 414x896 phone Vitest defaults to. Every bug these tests
-            // guard was found at a desktop width, and a regression test that reproduces at a
-            // size nobody reported is testing a different thing than it claims to.
+            // A laptop, not the 414x896 phone Vitest defaults to. Most of the bugs these
+            // tests guard were found at a desktop width, and a regression test that
+            // reproduces at a size nobody reported is testing a different thing than it
+            // claims to. The narrow-screen cases set their own width and put this back.
             viewport: { width: 1280, height: 800 },
             instances: [{ browser: 'chromium' }],
           },
