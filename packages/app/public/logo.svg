@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Attaché">
+  <!-- The LARGE mark. Same case as favicon.svg, but the lower panel carries the routing
+       fan — one request in, a decision, two ways out — which is the thing the tool is
+       actually about.
+       Two files rather than one because the fan stops resolving below about 32px: at
+       favicon size it becomes three grey smudges and costs the silhouette its clarity.
+       Same outline, detail only where there is room for it. Use this at 32px and above. -->
+  <rect width="32" height="32" rx="7.5" fill="#1c2333"/>
+  <path d="M12.6 11.2V9.9a1.6 1.6 0 0 1 1.6-1.6h3.6a1.6 1.6 0 0 1 1.6 1.6v1.3"
+        fill="none" stroke="#7dd3fc" stroke-width="1.8" stroke-linejoin="round"/>
+  <rect x="3.6" y="11.2" width="24.8" height="13.4" rx="2.2" fill="#7dd3fc"/>
+  <path d="M3.6 15.1H28.4" stroke="#1c2333" stroke-width="1.4"/>
+  <path d="M11.4 20 C14.6 20 14.8 17.6 18 17.6 M11.4 20 C14.6 20 14.8 22.4 18 22.4"
+        fill="none" stroke="#1c2333" stroke-width="1.35" stroke-linecap="round"/>
+  <circle cx="10.1" cy="20" r="1.75" fill="#1c2333"/>
+  <circle cx="19.3" cy="17.6" r="1.5" fill="#1c2333"/>
+  <circle cx="19.3" cy="22.4" r="1.5" fill="#1c2333"/>
+</svg>

@@ -4,6 +4,7 @@ import { Editor } from './Editor.js'
 import { EXAMPLES } from './examples.js'
 import { Findings } from './Findings.js'
 import { GraphView } from './GraphView.js'
+import { Logo } from './Logo.js'
 import { RouteTester } from './RouteTester.js'
 import { useStore, type Tab } from './store.js'
 
@@ -30,6 +31,7 @@ export function App() {
     <div className="app">
       <header className="bar">
         <h1>
+          <Logo />
           Attaché <span className="tagline">an Envoy config workbench</span>
         </h1>
         <Actions />

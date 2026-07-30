@@ -80,6 +80,9 @@ code {
 }
 
 .bar h1 {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
   font-size: 1rem;
   margin: 0;
   font-weight: 650;

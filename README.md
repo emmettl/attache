@@ -1,3 +1,5 @@
+<img src="packages/app/public/logo.svg" width="88" height="88" alt="">
+
 # Attaché
 
 An Envoy config workbench that runs in a browser tab. Paste a bootstrap YAML or an admin

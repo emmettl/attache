@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img"
+     aria-label="Attaché — an Envoy config workbench">
+  <!-- Source for og.png, which is what actually ships: crawlers do not render SVG for
+       og:image. Rasterise with `npm run og` (needs `brew install librsvg`).
+       Kept in the repo alongside the PNG so the image can be edited rather than redrawn. -->
+  <rect width="1200" height="630" fill="#10141b"/>
+
+  <!-- A hint of the graph the tool draws.
+       Confined to the right of x=700 and below y=250, which is the only region no text
+       occupies: an earlier version fanned across the whole canvas and put a node directly
+       behind the word "request", which is exactly the sort of decoration that makes a
+       headline harder to read in a feed thumbnail. -->
+  <g opacity="0.16" stroke="#7dd3fc" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M700 515 C 795 515 795 455 890 455 M700 515 C 795 515 795 575 890 575"/>
+    <path d="M890 455 C 985 455 985 445 1090 445 M890 575 C 985 575 985 585 1090 585"/>
+  </g>
+  <g opacity="0.26" fill="#a7f3d0">
+    <circle cx="890" cy="455" r="9"/><circle cx="890" cy="575" r="9"/>
+    <circle cx="1090" cy="445" r="9"/><circle cx="1090" cy="585" r="9"/>
+  </g>
+  <circle cx="700" cy="515" r="12" fill="#7dd3fc" opacity="0.34"/>
+
+  <!-- The mark, at the size the fan was drawn for. -->
+  <g transform="translate(96 86) scale(4.4)">
+    <rect width="32" height="32" rx="7.5" fill="#232c3c"/>
+    <path d="M12.6 11.2V9.9a1.6 1.6 0 0 1 1.6-1.6h3.6a1.6 1.6 0 0 1 1.6 1.6v1.3"
+          fill="none" stroke="#7dd3fc" stroke-width="1.8" stroke-linejoin="round"/>
+    <rect x="3.6" y="11.2" width="24.8" height="13.4" rx="2.2" fill="#7dd3fc"/>
+    <path d="M3.6 15.1H28.4" stroke="#232c3c" stroke-width="1.4"/>
+    <path d="M11.4 20 C14.6 20 14.8 17.6 18 17.6 M11.4 20 C14.6 20 14.8 22.4 18 22.4"
+          fill="none" stroke="#232c3c" stroke-width="1.35" stroke-linecap="round"/>
+    <circle cx="10.1" cy="20" r="1.75" fill="#232c3c"/>
+    <circle cx="19.3" cy="17.6" r="1.5" fill="#232c3c"/>
+    <circle cx="19.3" cy="22.4" r="1.5" fill="#232c3c"/>
+  </g>
+
+  <text x="270" y="176" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="88" font-weight="700" fill="#e6eaf0" letter-spacing="-2">Attaché</text>
+  <text x="274" y="228" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="31" fill="#97a1b0">an Envoy config workbench</text>
+
+  <text x="96" y="360" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="40" fill="#e6eaf0">Check a config, see what connects to what, and find</text>
+  <text x="96" y="414" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="40" fill="#e6eaf0">out where a request <tspan font-weight="700" fill="#7dd3fc">actually</tspan> goes.</text>
+
+  <text x="96" y="546" font-family="Menlo, Consolas, monospace" font-size="30" fill="#6fb3f5">npx @attache/app</text>
+  <text x="96" y="590" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="24" fill="#6b7688">Runs entirely in your browser. Nothing is uploaded.</text>
+</svg>

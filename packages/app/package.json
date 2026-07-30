@@ -42,7 +42,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "start": "node bin/attache.js"
+    "start": "node bin/attache.js",
+    "//og": "Regenerates the link-preview image from public/og.svg. Deliberately NOT part of `build`: it needs rsvg-convert (brew install librsvg), which CI does not have and should not need — the PNG is committed, because a social preview that silently disappears when a toolchain is missing is worse than one checked into the repo.",
+    "og": "rsvg-convert -w 1200 -h 630 public/og.svg -o public/og.png"
   },
   "//": "No runtime dependencies, deliberately. What ships is a prebuilt dist/ with everything already bundled into it — React, @attache/core and its `yaml` — and a bin that serves it using nothing but Node built-ins. So `npx @attache/app` downloads one small package and runs, instead of resolving an install tree first. That is the whole point of the npx route: somebody with a production config full of private keys should be able to get a local tool up in one command, without it going anywhere near a website.",
   "devDependencies": {
