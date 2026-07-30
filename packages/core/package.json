@@ -1,6 +1,6 @@
 {
   "name": "@attache/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Parse, check and reason about Envoy proxy configuration. Route matching, reference checking and a config graph, with no Envoy and no network.",
   "keywords": [
     "envoy",

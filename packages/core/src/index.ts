@@ -48,7 +48,7 @@ export {
   type TestRequest,
 } from './match.js'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 
 export interface Analysis {
   /** Whether this was a bootstrap or a `/config_dump`. */
