@@ -375,9 +375,19 @@ function selectChain(
 
   listener.filterChains.forEach((chain, index) => {
     const match = chain.match
-    if (match?.hasUnmodelledCriteria) {
+
+    // Named where they can be named. "Also matches on `source_prefix_ranges`" sends somebody
+    // to a line they can read; "matches on criteria this tester does not evaluate (source or
+    // destination IP ranges)", which is what this said before, tells them only that the
+    // answer might be wrong and leaves them to find out where.
+    const unevaluated = match?.unevaluatedCriteria ?? []
+    if (unevaluated.length > 0 || match?.hasUnmodelledCriteria) {
+      const on =
+        unevaluated.length > 0
+          ? `${unevaluated.map((n) => `\`${n}\``).join(', ')}, which this tester does not evaluate`
+          : 'criteria this tester has no model for'
       caveats.push(
-        `Filter chain ${index + 1} also matches on criteria this tester does not evaluate (source or destination IP ranges), so Envoy might not pick the chain shown.`,
+        `Filter chain ${index + 1} also matches on ${on}, so Envoy might not pick the chain shown.`,
       )
     }
 
@@ -624,6 +634,14 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
     if (action.kind === 'clusterHeader') {
       caveats.push(
         `The winning route takes its cluster from the \`${action.header}\` header, so the upstream cannot be read from the config.`,
+      )
+    }
+    // The destination below is therefore the request's own path, unrewritten. Said out loud
+    // rather than silently, and rather than running an RE2 pattern through JavaScript's
+    // regex engine and hoping the two agree on this one.
+    if (action.kind === 'redirect' && action.regexRewrite !== undefined) {
+      caveats.push(
+        `The winning route rewrites the redirect path with the regular expression \`${action.regexRewrite.pattern}\` → \`${action.regexRewrite.substitution}\`, which this tester does not apply.`,
       )
     }
 

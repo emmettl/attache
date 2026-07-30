@@ -29,6 +29,7 @@ import type {
   PathSpecifier,
   PerFilterOverride,
   QueryMatcher,
+  RegexRewrite,
   Route,
   RouteAction,
   RouteConfig,
@@ -61,6 +62,25 @@ const HCM_NAMES = new Set([
 ])
 
 const sourced = (c: Cursor) => ({ path: c.path, range: c.range })
+
+/** The key this cursor arrived through, spelled the way the config spelled it. */
+const writtenAs = (c: Cursor) => String(c.path[c.path.length - 1] ?? '')
+
+/**
+ * A `RegexMatchAndSubstitute`, read but not compiled — see `RegexRewrite` for why not.
+ *
+ * `google_re2` is the same empty marker it is everywhere else Envoy takes a regex, so it is
+ * acknowledged here for the same reason: fetching it without touching it left it looking
+ * like a field nobody had asked for.
+ */
+function regexRewrite(c: Cursor | undefined): RegexRewrite | undefined {
+  if (!c) return undefined
+  const pattern = c.field('pattern')
+  pattern?.field('googleRe2')?.acknowledge()
+  const regex = pattern?.strAt('regex')
+  if (regex === undefined) return undefined
+  return { pattern: regex, substitution: c.strAt('substitution') ?? '' }
+}
 
 // ---- addresses ------------------------------------------------------------------
 
@@ -273,6 +293,7 @@ function routeAction(c: Cursor): RouteAction {
       portRedirect: redirect.numAt('portRedirect'),
       pathRedirect: redirect.strAt('pathRedirect'),
       prefixRewrite: redirect.strAt('prefixRewrite'),
+      regexRewrite: regexRewrite(redirect.field('regexRewrite')),
       httpsRedirect: redirect.field('httpsRedirect')?.bool(),
       schemeRedirect: redirect.strAt('schemeRedirect'),
       responseCode: redirect.field('responseCode')?.enumOf(REDIRECT_RESPONSE_CODES),
@@ -312,10 +333,22 @@ function forwarding(c: Cursor): RouteForwarding | undefined {
   if (!route) return undefined
 
   const retry = route.field('retryPolicy')
+
+  // Two ordinary things a `route` action carries that do not decide which cluster the
+  // request reaches. `cors` is the CORS filter's per-route settings, in the place Envoy kept
+  // for them before `typed_per_filter_config` existed and still accepts. `hash_policy`
+  // chooses an ENDPOINT within the cluster the route already picked, from a header or a
+  // cookie that only exists at request time — so it is beyond what a config can be asked.
+  // Both are read for presence, which is what stops them being reported as fields out of
+  // nowhere on every route in a real config that has session affinity.
+  route.field('cors')?.acknowledge()
+  route.field('hashPolicy')?.acknowledge()
+
   return {
     timeout: route.strAt('timeout'),
     idleTimeout: route.strAt('idleTimeout'),
     prefixRewrite: route.strAt('prefixRewrite'),
+    regexRewrite: regexRewrite(route.field('regexRewrite')),
     hostRewriteLiteral: route.strAt('hostRewriteLiteral'),
     hasRetryPolicy: retry !== undefined,
     retryOn: retry?.strAt('retryOn'),
@@ -450,6 +483,8 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
     http2: http2 && {
       maxConcurrentStreams: http2.numAt('maxConcurrentStreams'),
       allowConnect: http2.field('allowConnect')?.bool(),
+      initialStreamWindowSize: http2.numAt('initialStreamWindowSize'),
+      initialConnectionWindowSize: http2.numAt('initialConnectionWindowSize'),
     },
     internalAddress: internal && internalAddressConfig(internal),
     accessLogNames: (c.field('accessLog')?.items() ?? [])
@@ -477,7 +512,35 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
   }
 }
 
+/**
+ * The criteria Envoy narrows filter chains by that this package reads and does not evaluate.
+ *
+ * Every one of them is about an address at one end of the connection or the other, and the
+ * route tester asks for a request rather than a socket, so none of them can be answered
+ * here. Read by name regardless: reading is the whole difference between "Attaché has never
+ * heard of this field" and "Attaché knows exactly what this is and cannot answer it", and
+ * `source_prefix_ranges` — the ordinary way a sidecar tells inbound mesh traffic from
+ * everything else — was getting the first sentence.
+ */
+const UNEVALUATED_MATCH_CRITERIA = [
+  'prefixRanges',
+  'sourcePrefixRanges',
+  'directSourcePrefixRanges',
+  'sourcePorts',
+  'sourceType',
+  'addressSuffix',
+  'suffixLen',
+] as const
+
 function filterChainMatch(c: Cursor): FilterChainMatch {
+  const unevaluatedCriteria: string[] = []
+  for (const name of UNEVALUATED_MATCH_CRITERIA) {
+    const criterion = c.field(name)
+    if (!criterion) continue
+    criterion.acknowledge()
+    unevaluatedCriteria.push(writtenAs(criterion))
+  }
+
   const serverNames = (c.field('serverNames')?.items() ?? [])
     .map((s) => s.str())
     .filter((s): s is string => s !== undefined)
@@ -493,7 +556,9 @@ function filterChainMatch(c: Cursor): FilterChainMatch {
     destinationPort,
     transportProtocol,
     applicationProtocols,
-    // Asked after every known field has been read, so "unread" means "not modelled".
+    unevaluatedCriteria,
+    // Asked after every known field has been read, so "unread" means "not modelled" — and
+    // now that the CIDR criteria above are read by name, it means only that.
     hasUnmodelledCriteria: c.hasUnread(),
   }
 }
@@ -522,6 +587,26 @@ function tlsContext(socket: Cursor): TlsContext | undefined {
   }
 
   const common = typed.field('commonTlsContext')
+
+  // Real TLS configuration, read and left alone. Whether this cipher list is the right one,
+  // or whether that validation context trusts the CA it ought to, is a question about
+  // somebody's threat model and their PKI — not one anything in a browser tab can answer
+  // from the config in front of it.
+  //
+  // The reason they are read at all is that they were not: `tls_params` sits on essentially
+  // every listener that terminates TLS in earnest, and being told that Envoy's own
+  // minimum-protocol-version field was unrecognised is precisely the overstatement this
+  // split exists to stop. The validation context has three spellings and all three are
+  // asked for, because which one a config uses says nothing about how well it is understood.
+  common?.field('tlsParams')?.acknowledge()
+  for (const name of [
+    'validationContext',
+    'combinedValidationContext',
+    'validationContextSdsSecretConfig',
+  ] as const) {
+    common?.field(name)?.acknowledge()
+  }
+
   const certificates = common?.field('tlsCertificates')?.items() ?? []
   for (const certificate of certificates) {
     // Consumed but never read. The fields under here are the private key and the chain, and
@@ -743,6 +828,10 @@ function bootstrapOf(root: Cursor): Bootstrap | undefined {
   const admin = root.field('admin')
   const dynamic = root.field('dynamicResources')
   if (!node && !admin && !dynamic) return undefined
+
+  // The admin interface keeps its own access log, separate from any listener's. Where a log
+  // line lands is not something this can follow, so it is read for presence like the rest.
+  admin?.field('accessLog')?.acknowledge()
 
   const adminAddress = admin?.field('address')
 

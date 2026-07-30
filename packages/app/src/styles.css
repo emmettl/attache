@@ -17,9 +17,9 @@
   --ok: #197a4b;
 
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-  /* Named because the completion popup needs it: it renders inside the editor, which sets
-     `--mono` on everything, and a one-line explanation in a monospace column reads as more
-     code rather than as the aside it is. */
+  /* Named because the lint tooltip and the completion popup both need it: each renders
+     inside the editor, which sets `--mono` on everything, and prose in a monospace box reads
+     like output rather than like a sentence somebody wrote. */
   --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --line-height: 20px;
 
@@ -370,19 +370,13 @@ code {
   filter: grayscale(0.3);
 }
 
-/* A line something was said about. Tinted rather than underlined, because a squiggle under
-   YAML competes with the indentation guides the eye is already following. */
-.cm-diag-error {
-  background: color-mix(in srgb, var(--error) 13%, transparent);
-}
-
-.cm-diag-warning {
-  background: color-mix(in srgb, var(--warning) 13%, transparent);
-}
-
-.cm-diag-info {
-  background: color-mix(in srgb, var(--info) 10%, transparent);
-}
+/* The diagnostic underline, the gutter markers and the hover are all styled in
+   `Editor.tsx`, through `EditorView.theme` rather than from here. Not a stylistic
+   preference: CodeMirror injects its own base theme into <head> at the same specificity a
+   rule here can reach, so which one wins comes down to injection order — and it silently
+   went CodeMirror's way. `EditorView.theme` is the mechanism built to outrank the base
+   theme, and it takes our CSS variables perfectly well, so the theming still lives in one
+   place conceptually even though it is expressed in two files. */
 
 .examples {
   display: flex;
@@ -568,6 +562,25 @@ code {
   outline: none;
   border-radius: 5px;
   box-shadow: var(--ring);
+}
+
+/* Arrived at from the editor's gutter. A ring rather than a jump or a colour change: the
+   card may already be on screen, in which case scrolling it into view moves nothing and
+   there would otherwise be no answer to "did that do anything?". It fades because a
+   permanent marker would be a selection, and nothing here is selected — the click asked a
+   question and this is the answer pointing at itself. */
+.finding.flash {
+  animation: finding-flash 1.4s var(--ease);
+}
+
+@keyframes finding-flash {
+  0%,
+  35% {
+    box-shadow: var(--ring), var(--shadow-1), var(--edge-light);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent, var(--shadow-1), var(--edge-light);
+  }
 }
 
 .finding.error {
@@ -982,6 +995,27 @@ code {
 .segmented button:focus-visible {
   outline: none;
   box-shadow: var(--ring);
+}
+
+/* The pinned node. A filled left edge and a solid ring rather than the lift a hover gets:
+   lifting is a response to the pointer being there, and the whole point of this state is
+   that the pointer has gone. It also has to survive `.lit` and `.hit` landing on the same
+   element, hence the ring rather than a border colour those would overwrite. */
+.graph-node.selected {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-2), var(--edge-light), var(--ring);
+}
+
+.graph-node.selected::before {
+  opacity: 1;
+  width: 4px;
+}
+
+/* A pinned node is what the panel is about, so it stays legible even when a search has
+   ruled it out — otherwise clicking a node and then searching for something else leaves the
+   reference link describing a node faded to a third of its contrast. */
+.graph-node.selected.dim {
+  opacity: 0.75;
 }
 
 /* The nodes whose own text matched, as against the ones pulled in around them. Both are

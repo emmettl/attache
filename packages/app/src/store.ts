@@ -74,6 +74,15 @@ interface State {
   /** The line the editor should reveal, bumped each time so repeat clicks still scroll. */
   reveal: { line: number; nonce: number } | null
   /**
+   * The finding the panel should scroll to and flash, when the editor asks for one.
+   *
+   * The mirror of `reveal`, and the direction that did not exist until now: everything in
+   * this app flowed finding → editor, so a marker in the gutter was a dead end. You could
+   * see that Attaché had said something about line 47 and had no way to get to what it said
+   * short of scrolling the list yourself looking for the number.
+   */
+  focus: { line: number; nonce: number } | null
+  /**
    * The block the editor should band, while something elsewhere is hovered.
    *
    * Separate from `reveal` because they answer different questions — "take me there" and
@@ -107,6 +116,7 @@ interface State {
   clearConfig: () => void
   setTab: (tab: Tab) => void
   revealLine: (line: number) => void
+  focusFinding: (line: number) => void
   setHighlight: (block: LineRange | null) => void
   setMask: (blocks: LineRange[] | null) => void
   setRequest: (patch: Partial<RequestForm>) => void
@@ -231,6 +241,7 @@ export const useStore = create<State>((set, get) => ({
   ...load(DEFAULT_EXAMPLE.text),
   tab: 'findings',
   reveal: null,
+  focus: null,
   highlight: null,
   mask: null,
   request: DEFAULT_REQUEST,
@@ -293,6 +304,18 @@ export const useStore = create<State>((set, get) => ({
 
   revealLine(line) {
     set((state) => ({ reveal: { line, nonce: (state.reveal?.nonce ?? 0) + 1 } }))
+  },
+
+  /**
+   * Go the other way: from a line in the source to what was said about it.
+   *
+   * Switches to the findings tab as well as pointing at the finding, because the request is
+   * "show me this" and being taken to a tab that is not showing it would be a worse answer
+   * than doing nothing. Nonce for the same reason as `reveal` — clicking the same gutter
+   * marker twice should scroll back to it rather than sit there having already been there.
+   */
+  focusFinding(line) {
+    set((state) => ({ tab: 'findings', focus: { line, nonce: (state.focus?.nonce ?? 0) + 1 } }))
   },
 
   setHighlight(block) {

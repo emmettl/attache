@@ -138,12 +138,13 @@ export interface TlsContext extends Sourced {
 }
 
 /**
- * The subset of `filter_chain_match` that the route tester evaluates.
+ * `filter_chain_match`, split into what the route tester evaluates and what it does not.
  *
- * `prefix_ranges` and the other CIDR-based criteria are deliberately absent: they match on
- * connection source and destination IP, which the tester does not ask for, and modelling a
- * criterion that is never evaluated would make chain selection look more considered than
- * it is. They surface as unmodelled fields instead.
+ * The CIDR-based criteria are still not evaluated — they match on the addresses at the ends
+ * of the connection, which is not something a request typed into the tester has. What
+ * changed is that they are now READ. Leaving them unread reported `source_prefix_ranges`,
+ * a field out of Envoy's own listener message, as one Attaché had never heard of, and on a
+ * front proxy that steers by source range that is most of what its chain matching says.
  */
 export interface FilterChainMatch extends Sourced {
   /** SNI. Supports a leading wildcard, e.g. `*.example.com`. */
@@ -152,10 +153,20 @@ export interface FilterChainMatch extends Sourced {
   transportProtocol?: string
   applicationProtocols: string[]
   /**
-   * Whether this chain also matches on criteria the route tester does not evaluate.
+   * Criteria on this chain that are recognised and deliberately not evaluated, spelled the
+   * way they were written — `source_prefix_ranges`, `source_type`.
    *
-   * When true, chain selection here can differ from Envoy's, and the tester says so.
-   * Recorded rather than inferred later because by then the unread fields are gone.
+   * Named rather than counted because the caveat this feeds is the difference between
+   * telling somebody which line to go and read and telling them only that the answer might
+   * be wrong.
+   */
+  unevaluatedCriteria: string[]
+  /**
+   * Whether this chain ALSO matches on something nothing here has heard of at all.
+   *
+   * Distinct from the list above: that one is a limit this package chose, this one is a
+   * limit it discovered. Either way chain selection can differ from Envoy's and the tester
+   * says so. Recorded rather than inferred later because by then the unread fields are gone.
    */
   hasUnmodelledCriteria: boolean
 }
@@ -211,6 +222,16 @@ export interface Http2Options {
   maxConcurrentStreams?: number
   /** Extended CONNECT, which is how HTTP/2 carries WebSockets. */
   allowConnect?: boolean
+  /**
+   * Flow control, in bytes: how much a peer may send before Envoy acknowledges it.
+   *
+   * Here because they sit beside `max_concurrent_streams` in every tuned config and were
+   * being reported as fields nobody recognised on the strength of that alone. Read, not
+   * judged — whether 64 KiB is the right window for a given link is a question about that
+   * link's bandwidth-delay product, which is not in the config.
+   */
+  initialStreamWindowSize?: number
+  initialConnectionWindowSize?: number
 }
 
 /**
@@ -283,6 +304,8 @@ export interface RouteForwarding {
   prefixRewrite?: string
   /** The `Host` the upstream sees, when the route rewrites it. */
   hostRewriteLiteral?: string
+  /** The other arm of the path rewrite oneof. Mutually exclusive with `prefixRewrite`. */
+  regexRewrite?: RegexRewrite
   /** Whether a `retry_policy` is configured at all, which is most of what is worth saying. */
   hasRetryPolicy: boolean
   /** What it retries on — `5xx`, `reset,connect-failure`. */
@@ -352,12 +375,34 @@ export interface RedirectAction {
   pathRedirect?: string
   /** Replaces the part of the path that the route matched on. */
   prefixRewrite?: string
+  /** The third arm of the same oneof: the path put through a regular expression. */
+  regexRewrite?: RegexRewrite
   /** `https_redirect: true` is shorthand for `scheme_redirect: https`. */
   httpsRedirect?: boolean
   schemeRedirect?: string
   /** MOVED_PERMANENTLY, FOUND, SEE_OTHER, TEMPORARY_REDIRECT, PERMANENT_REDIRECT. */
   responseCode?: string
   stripQuery?: boolean
+}
+
+/**
+ * A `RegexMatchAndSubstitute`, kept as the pair of strings it was written as.
+ *
+ * Deliberately not compiled and never applied. The pattern is RE2 and the substitution
+ * writes its capture groups as `\1`, so neither is a JavaScript regular expression, and a
+ * tester that ran them through one would be answering a slightly different question than
+ * Envoy without saying which parts it got away with.
+ *
+ * Modelled all the same, because a redirect whose path comes out of a regex has a
+ * destination that cannot be read off the config unless the rule is shown — and the
+ * alternative on offer was reporting Envoy's documented rewrite field as one nothing here
+ * had heard of.
+ */
+export interface RegexRewrite {
+  /** The RE2 pattern, from `pattern.regex`. */
+  pattern: string
+  /** What matches are replaced with. Empty is legal and means "delete the match". */
+  substitution: string
 }
 
 /**

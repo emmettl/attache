@@ -50,13 +50,14 @@
     "og": "rsvg-convert -w 1200 -h 630 public/og.svg -o public/og.png"
   },
   "//": "No runtime dependencies, deliberately. What ships is a prebuilt dist/ with everything already bundled into it — React, CodeMirror, @attache/core and its `yaml` — and a bin that serves it using nothing but Node built-ins. So `npx @attache/app` downloads one small package and runs, instead of resolving an install tree first. That is the whole point of the npx route: somebody with a production config full of private keys should be able to get a local tool up in one command, without it going anywhere near a website.",
-  "//codemirror": "The individual @codemirror/* packages, NOT the `codemirror` convenience bundle — that one pulls in search, lint, bracket matching and a full keymap whether or not you use them. Measured before taking it: this set is 408kB raw but 115kB gzipped, roughly doubling the app to ~220kB on the wire, which is unremarkable for a developer tool. The deciding factor was not syntax highlighting, which is a 3kB tokeniser, but autocompletion: doing that on a textarea means caret pixel measurement, popup positioning, keyboard interception, and insertion that does not destroy the undo stack. @codemirror/commands is not optional — without history() the editor would lose undo, which the textarea gave us for free. @codemirror/autocomplete was left uninstalled until something used it, and now does: value completion, ~11kB gzipped, taking the app to ~231kB. It is the dependency that justified taking CodeMirror in the first place, so it is the one this set was always going to end up carrying.",
+  "//codemirror": "The individual @codemirror/* packages, NOT the `codemirror` convenience bundle \u2014 that one pulls in search, bracket matching and a full keymap whether or not you use them. Measured before taking it: this set is 408kB raw but 115kB gzipped, roughly doubling the app to ~220kB on the wire, which is unremarkable for a developer tool. The deciding factor was not syntax highlighting, which is a 3kB tokeniser, but autocompletion: doing that on a textarea means caret pixel measurement, popup positioning, keyboard interception, and insertion that does not destroy the undo stack. @codemirror/commands is not optional \u2014 without history() the editor would lose undo, which the textarea gave us for free. @codemirror/lint was added later and carries the diagnostic underline, the gutter markers and the hover, all of which were otherwise going to be hand-rolled against the same DOM. @codemirror/autocomplete came last, and is the dependency that justified taking CodeMirror in the first place \u2014 so it is the one this set was always going to end up carrying. Together the two take it to ~239kB gzipped.",
   "devDependencies": {
     "@attache/core": "0.2.0",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-yaml": "^6.1.3",
     "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.7",
     "@lezer/highlight": "^1.2.3",
