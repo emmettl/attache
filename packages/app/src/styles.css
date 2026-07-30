@@ -1104,6 +1104,22 @@ code {
   font-size: 0.88rem;
 }
 
+/*
+  What the connection manager did to the request before routing. A statement of fact rather
+  than a hedge, so it does not borrow the caveats' softened ink — it is the reason the
+  answer below makes sense, not a warning about it.
+*/
+.rewrites {
+  margin: 0 0 0.8rem;
+  padding-left: 1.1rem;
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
+.rewrites li::marker {
+  color: var(--ink-soft);
+}
+
 .stage {
   margin-bottom: 0.9rem;
 }

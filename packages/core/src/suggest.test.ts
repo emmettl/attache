@@ -29,7 +29,10 @@ describe('values that come from the config itself', () => {
 
   test('a cluster says where its endpoints come from, since the names alone rarely do', () => {
     const suggestions = suggestValues(['route', 'cluster'], analyse(PRODUCTION).model)
-    expect(suggestions).toEqual([{ value: 'api_service', detail: 'endpoints over EDS' }])
+    expect(suggestions).toEqual([
+      { value: 'api_service', detail: 'endpoints over EDS' },
+      { value: 'api_shadow', detail: '1 endpoint' },
+    ])
   })
 
   test('route config names include the ones written inline', () => {

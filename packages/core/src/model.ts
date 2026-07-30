@@ -262,12 +262,14 @@ function headerMatcher(c: Cursor): HeaderMatcher {
 
   let kind: HeaderMatchKind = 'unmodelled'
   let value: string | undefined
+  let ignoreCase = false
 
   const stringMatch = c.field('stringMatch')
   if (stringMatch) {
-    // `ignore_case` is read so it is not flagged; matching below is case-sensitive, which
-    // is a limitation the route tester states rather than one it hides.
-    stringMatch.field('ignoreCase')
+    // Carried through to the matcher rather than merely fetched. Envoy applies it to the
+    // four literal arms and explicitly not to `safe_regex`, so it is cleared again below
+    // when the regex arm is the one that answers.
+    ignoreCase = stringMatch.field('ignoreCase')?.bool() ?? false
     const arms = [
       ['exact', 'exact'],
       ['prefix', 'prefix'],
@@ -290,6 +292,10 @@ function headerMatcher(c: Cursor): HeaderMatcher {
         if (regex !== undefined) {
           kind = 'safeRegex'
           value = regex
+          // RE2 carries its own case rules inside the pattern, so Envoy documents
+          // `ignore_case` as having no effect here. Honouring it anyway would be this
+          // package inventing a behaviour and then being confidently wrong about it.
+          ignoreCase = false
         }
       }
     }
@@ -328,48 +334,118 @@ function headerMatcher(c: Cursor): HeaderMatcher {
   // not", which Envoy expresses as presence inverted.
   if (value === undefined) {
     const present = c.field('presentMatch')?.bool()
-    if (present !== undefined) return { ...sourced(c), name, kind: 'present', invert: invert !== present, treatMissingAsEmpty }
+    if (present !== undefined) {
+      return {
+        ...sourced(c),
+        name,
+        kind: 'present',
+        invert: invert !== present,
+        treatMissingAsEmpty,
+        ignoreCase: false,
+      }
+    }
   }
 
-  // A matcher with a name and nothing else is a presence check. A `range_match` is the one
-  // arm left: recognised, not evaluated, and reported as such rather than as a field this
-  // package has never heard of.
+  // A `range_match` is the one arm left: recognised, not evaluated, and reported as such
+  // rather than as a field this package has never heard of.
   const rangeMatch = c.field('rangeMatch')
   if (rangeMatch) rangeMatch.acknowledge()
-  else if (value === undefined && kind === 'unmodelled') kind = 'present'
+  else if (value === undefined && kind === 'unmodelled') {
+    // A matcher with a name and nothing else IS a presence check — but only when there is
+    // genuinely nothing else. Every arm above has been asked for by now, so anything still
+    // unread is an arm nobody here recognises, and calling that a presence check is a
+    // confident wrong answer where an admitted gap was available: it made a route with an
+    // unread criterion match every request carrying the header, silently.
+    kind = c.hasUnread() ? 'unmodelled' : 'present'
+  }
 
-  return { ...sourced(c), name, kind, value, invert, treatMissingAsEmpty }
+  return { ...sourced(c), name, kind, value, invert, treatMissingAsEmpty, ignoreCase }
 }
 
 function queryMatcher(c: Cursor): QueryMatcher {
   const name = c.strAt('name') ?? ''
-  if (c.field('presentMatch')) return { ...sourced(c), name, kind: 'present' }
+  // Read up front rather than in an early return, so that the arms below are asked for even
+  // when this one answers — `hasUnread()` at the bottom is only meaningful once every arm
+  // this package knows has been fetched.
+  const present = c.field('presentMatch')?.bool()
 
   const stringMatch = c.field('stringMatch')
   if (stringMatch) {
-    stringMatch.field('ignoreCase')
+    const ignoreCase = stringMatch.field('ignoreCase')?.bool() ?? false
     for (const field of ['exact', 'prefix', 'suffix', 'contains'] as const) {
       const found = stringMatch.strAt(field)
-      if (found !== undefined) return { ...sourced(c), name, kind: field, value: found }
+      if (found !== undefined) return { ...sourced(c), name, kind: field, value: found, ignoreCase }
     }
     const safeRegex = stringMatch.field('safeRegex')
     if (safeRegex) {
-      safeRegex.field('googleRe2')
+      safeRegex.field('googleRe2')?.acknowledge()
       const regex = safeRegex.strAt('regex')
-      if (regex !== undefined) return { ...sourced(c), name, kind: 'safeRegex', value: regex }
+      if (regex !== undefined) {
+        return { ...sourced(c), name, kind: 'safeRegex', value: regex, ignoreCase: false }
+      }
     }
   }
 
-  return { ...sourced(c), name, kind: 'present' }
+  if (present === true) return { ...sourced(c), name, kind: 'present', ignoreCase: false }
+
+  // `present_match: false` is not evaluated, and that is a decision rather than an omission.
+  // Envoy's proto documents the field as "specifies whether a query parameter should be
+  // present", which reads as "it must be absent"; its router keys the check on which arm of
+  // the oneof was set, under which writing `false` behaves exactly like writing `true`. Two
+  // readings that disagree on every request is precisely the case this package answers by
+  // naming the field rather than by picking one and sounding sure.
+  if (present === false) {
+    return { ...sourced(c), name, kind: 'unmodelled', ignoreCase: false, label: 'present_match: false' }
+  }
+
+  // As on a header matcher: a name and nothing else is a presence check, an unread arm is
+  // not. This one returned `present` for anything it did not recognise, which meant the
+  // `unmodelled` kind in the type was unreachable and a route carrying a matcher out of a
+  // newer Envoy matched on the parameter merely being there.
+  return c.hasUnread()
+    ? { ...sourced(c), name, kind: 'unmodelled', ignoreCase: false }
+    : { ...sourced(c), name, kind: 'present', ignoreCase: false }
 }
 
+/**
+ * Route match criteria this package reads and deliberately does not evaluate.
+ *
+ * The counterpart of `UNEVALUATED_MATCH_CRITERIA` on a filter chain, and it exists for the
+ * same reason: none of these can be settled from a method, an authority and a path.
+ * `runtime_fraction` matches a share of requests and is decided per request; `grpc` asks
+ * what content type the client sent; `tls_context` asks about a certificate this tester
+ * never sees; `dynamic_metadata` asks what an earlier filter put there.
+ */
+const UNEVALUATED_ROUTE_CRITERIA = [
+  'runtimeFraction',
+  'grpc',
+  'tlsContext',
+  'dynamicMetadata',
+] as const
+
 function routeMatch(c: Cursor): RouteMatch {
+  const pathSpec = pathSpecifier(c)
+  const caseSensitive = c.field('caseSensitive')?.bool() ?? true
+  const headers = (c.field('headers')?.items() ?? []).map(headerMatcher)
+  const queryParameters = (c.field('queryParameters')?.items() ?? []).map(queryMatcher)
+
+  const unevaluatedCriteria: string[] = []
+  for (const name of UNEVALUATED_ROUTE_CRITERIA) {
+    const criterion = c.field(name)
+    if (!criterion) continue
+    criterion.acknowledge()
+    unevaluatedCriteria.push(writtenAs(criterion))
+  }
+
   return {
     ...sourced(c),
-    pathSpec: pathSpecifier(c),
-    caseSensitive: c.field('caseSensitive')?.bool() ?? true,
-    headers: (c.field('headers')?.items() ?? []).map(headerMatcher),
-    queryParameters: (c.field('queryParameters')?.items() ?? []).map(queryMatcher),
+    pathSpec,
+    caseSensitive,
+    headers,
+    queryParameters,
+    unevaluatedCriteria,
+    // Asked last, so "unread" means "not modelled" rather than "not read yet".
+    hasUnmodelledCriteria: c.hasUnread(),
   }
 }
 
@@ -443,15 +519,34 @@ function forwarding(c: Cursor): RouteForwarding | undefined {
 
   const retry = route.field('retryPolicy')
 
-  // Two ordinary things a `route` action carries that do not decide which cluster the
-  // request reaches. `cors` is the CORS filter's per-route settings, in the place Envoy kept
-  // for them before `typed_per_filter_config` existed and still accepts. `hash_policy`
-  // chooses an ENDPOINT within the cluster the route already picked, from a header or a
-  // cookie that only exists at request time — so it is beyond what a config can be asked.
-  // Both are read for presence, which is what stops them being reported as fields out of
-  // nowhere on every route in a real config that has session affinity.
-  route.field('cors')?.acknowledge()
-  route.field('hashPolicy')?.acknowledge()
+  // Ordinary things a `route` action carries that do not decide which cluster the request
+  // reaches. `cors` is the CORS filter's per-route settings, in the place Envoy kept for
+  // them before `typed_per_filter_config` existed and still accepts. `hash_policy` chooses
+  // an ENDPOINT within the cluster the route already picked, from a header or a cookie that
+  // only exists at request time — so it is beyond what a config can be asked. The rest are
+  // limits, rate limits and the response code for a cluster that is missing at runtime.
+  // Each is read for presence, which is what stops it being reported as a field out of
+  // nowhere on every route in a real config.
+  for (const name of [
+    'cors',
+    'hashPolicy',
+    'rateLimits',
+    'includeVhRateLimits',
+    'upgradeConfigs',
+    'maxStreamDuration',
+    'internalRedirectPolicy',
+    'clusterNotFoundResponseCode',
+    'priority',
+    'metadataMatch',
+    'hostRewritePathRegex',
+    'pathRewritePolicy',
+    'earlyDataPolicy',
+    'clusterSpecifierPlugin',
+    'retryPolicyTypedConfig',
+    'hedgePolicy',
+  ] as const) {
+    route.field(name)?.acknowledge()
+  }
 
   return {
     timeout: route.strAt('timeout'),
@@ -459,9 +554,27 @@ function forwarding(c: Cursor): RouteForwarding | undefined {
     prefixRewrite: route.strAt('prefixRewrite'),
     regexRewrite: regexRewrite(route.field('regexRewrite')),
     hostRewriteLiteral: route.strAt('hostRewriteLiteral'),
+    hostRewriteHeader: route.strAt('hostRewriteHeader'),
+    autoHostRewrite: route.field('autoHostRewrite')?.bool(),
+    appendXForwardedHost: route.field('appendXForwardedHost')?.bool(),
     hasRetryPolicy: retry !== undefined,
     retryOn: retry?.strAt('retryOn'),
     numRetries: retry?.numAt('numRetries'),
+    mirrorClusters: (route.field('requestMirrorPolicies')?.items() ?? [])
+      .map((policy): ClusterRef | undefined => {
+        // The other arm names a cluster header, which is decided per request. The fraction
+        // beside it is how much of the traffic is copied, which is real configuration and
+        // not a question about whether the cluster is reached at all.
+        policy.field('runtimeFraction')?.acknowledge()
+        policy.field('traceSampled')?.acknowledge()
+        policy.field('disableShadowHostSuffixAppend')?.acknowledge()
+        policy.field('clusterHeader')
+        const cluster = policy.strAt('cluster')
+        return cluster === undefined || cluster === ''
+          ? undefined
+          : { ...sourced(policy), cluster, by: 'request_mirror_policies' }
+      })
+      .filter((ref): ref is ClusterRef => ref !== undefined),
   }
 }
 
@@ -491,12 +604,56 @@ function perFilterConfig(c: Cursor): PerFilterOverride[] {
   })
 }
 
+/**
+ * Header mutations, which every level of a route configuration carries its own copy of.
+ *
+ * Read for presence and no further, at all four levels. What a config adds to a request on
+ * its way past is real configuration and plainly not a routing fact — but it is written on
+ * essentially every virtual host in production, and having four ordinary Envoy fields
+ * reported as unrecognised on each of them is what the unrecognised list is not for.
+ */
+function headerMutations(c: Cursor): void {
+  for (const name of [
+    'requestHeadersToAdd',
+    'requestHeadersToRemove',
+    'responseHeadersToAdd',
+    'responseHeadersToRemove',
+  ] as const) {
+    c.field(name)?.acknowledge()
+  }
+}
+
 function route(c: Cursor): Route {
   const match = c.require('match', 'Without it Envoy cannot decide whether this route applies.')
+
+  headerMutations(c)
+  // The decorator names the span this route produces, `tracing` overrides the sampling for
+  // it, and the rest are limits and stat names. All real, none of them about where the
+  // request goes.
+  for (const name of [
+    'decorator',
+    'tracing',
+    'metadata',
+    'perRequestBufferLimitBytes',
+    'statPrefix',
+  ] as const) {
+    c.field(name)?.acknowledge()
+  }
+
   return {
     ...sourced(c),
     name: c.strAt('name'),
-    match: match ? routeMatch(match) : { ...sourced(c), pathSpec: { kind: 'none' }, caseSensitive: true, headers: [], queryParameters: [] },
+    match: match
+      ? routeMatch(match)
+      : {
+          ...sourced(c),
+          pathSpec: { kind: 'none' },
+          caseSensitive: true,
+          headers: [],
+          queryParameters: [],
+          unevaluatedCriteria: [],
+          hasUnmodelledCriteria: false,
+        },
     action: routeAction(c),
     forwarding: forwarding(c),
     typedPerFilterConfig: perFilterConfig(c),
@@ -505,19 +662,52 @@ function route(c: Cursor): Route {
 
 function virtualHost(c: Cursor): VirtualHost {
   const domains = c.require('domains', 'A virtual host with no domains can never be selected.')
+
+  headerMutations(c)
+  for (const name of [
+    'retryPolicy',
+    'retryPolicyTypedConfig',
+    'hedgePolicy',
+    'cors',
+    'rateLimits',
+    'virtualClusters',
+    'metadata',
+    'matcher',
+  ] as const) {
+    c.field(name)?.acknowledge()
+  }
+
   return {
     ...sourced(c),
     name: c.strAt('name'),
     domains: (domains?.items() ?? []).map((d) => d.str()).filter((d): d is string => d !== undefined),
     routes: (c.field('routes')?.items() ?? []).map(route),
+    requireTls: c.strAt('requireTls'),
+    includeRequestAttemptCount: c.field('includeRequestAttemptCount')?.bool(),
+    includeAttemptCountInResponse: c.field('includeAttemptCountInResponse')?.bool(),
+    perRequestBufferLimitBytes: c.numAt('perRequestBufferLimitBytes'),
+    typedPerFilterConfig: perFilterConfig(c),
   }
 }
 
 function routeConfig(c: Cursor): RouteConfig {
+  headerMutations(c)
+  for (const name of ['internalOnlyHeaders', 'vhds', 'clusterSpecifierPlugins', 'metadata'] as const) {
+    c.field(name)?.acknowledge()
+  }
+  // A route configuration can carry per-filter overrides too, at the level above its virtual
+  // hosts. Read the same way as everywhere else it appears, and then left alone.
+  c.field('typedPerFilterConfig')?.acknowledge()
+
   return {
     ...sourced(c),
     name: c.strAt('name'),
     virtualHosts: (c.field('virtualHosts')?.items() ?? []).map(virtualHost),
+    ignorePortInHostMatching: c.field('ignorePortInHostMatching')?.bool(),
+    ignorePathParametersInPathMatching: c.field('ignorePathParametersInPathMatching')?.bool(),
+    validateClusters: c.field('validateClusters')?.bool(),
+    mostSpecificHeaderMutationsWins: c.field('mostSpecificHeaderMutationsWins')?.bool(),
+    maxDirectResponseBodySizeBytes: c.numAt('maxDirectResponseBodySizeBytes'),
   }
 }
 
@@ -587,6 +777,22 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
   const http2 = c.field('http2ProtocolOptions')
   const internal = c.field('internalAddressConfig')
 
+  // Sub-messages that are real configuration and no business of this package's: the body a
+  // locally generated error gets, which client certificate details are forwarded, and the
+  // extension points for deciding the client's address and mutating headers early.
+  for (const name of [
+    'localReplyConfig',
+    'setCurrentClientCertDetails',
+    'schemeHeaderTransformation',
+    'originalIpDetectionExtensions',
+    'earlyHeaderMutationExtensions',
+    'requestIdExtension',
+    'streamErrorOnInvalidHttpMessage',
+    'pathNormalizationOptions',
+  ] as const) {
+    c.field(name)?.acknowledge()
+  }
+
   return {
     ...sourced(c),
     statPrefix: c.strAt('statPrefix'),
@@ -596,12 +802,33 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
     httpFilters: filters.map((f) => f.strAt('name')).filter((n): n is string => n !== undefined),
     useRemoteAddress: c.field('useRemoteAddress')?.bool(),
     addUserAgent: c.field('addUserAgent')?.bool(),
+    xffNumTrustedHops: c.numAt('xffNumTrustedHops'),
+    skipXffAppend: c.field('skipXffAppend')?.bool(),
+    normalizePath: c.field('normalizePath')?.bool(),
+    mergeSlashes: c.field('mergeSlashes')?.bool(),
+    pathWithEscapedSlashesAction: c.strAt('pathWithEscapedSlashesAction'),
+    stripAnyHostPort: c.field('stripAnyHostPort')?.bool(),
+    stripMatchingHostPort: c.field('stripMatchingHostPort')?.bool(),
+    via: c.strAt('via'),
+    serverName: c.strAt('serverName'),
+    generateRequestId: c.field('generateRequestId')?.bool(),
+    preserveExternalRequestId: c.field('preserveExternalRequestId')?.bool(),
+    alwaysSetRequestIdInResponse: c.field('alwaysSetRequestIdInResponse')?.bool(),
+    proxy100Continue: c.field('proxy100Continue')?.bool(),
+    forwardClientCertDetails: c.strAt('forwardClientCertDetails'),
+    maxRequestHeadersKb: c.numAt('maxRequestHeadersKb'),
     idleTimeout: common?.strAt('idleTimeout'),
     headersWithUnderscoresAction: common
       ?.field('headersWithUnderscoresAction')
       ?.enumOf(UNDERSCORE_ACTIONS),
+    maxConnectionDuration: common?.strAt('maxConnectionDuration'),
+    maxStreamDuration: common?.strAt('maxStreamDuration'),
+    maxHeadersCount: common?.numAt('maxHeadersCount'),
     streamIdleTimeout: c.strAt('streamIdleTimeout'),
     requestTimeout: c.strAt('requestTimeout'),
+    requestHeadersTimeout: c.strAt('requestHeadersTimeout'),
+    drainTimeout: c.strAt('drainTimeout'),
+    delayedCloseTimeout: c.strAt('delayedCloseTimeout'),
     serverHeaderTransformation: c
       .field('serverHeaderTransformation')
       ?.enumOf(SERVER_HEADER_TRANSFORMATIONS),
@@ -795,14 +1022,54 @@ function listener(c: Cursor): Listener {
   const address = c.field('address')
   const fallback = c.field('defaultFilterChain')
 
+  // Sockets, balancing and drain behaviour: how the listener takes a connection rather than
+  // what it does with one. Real fields, ordinary on a tuned config, and outside the spine
+  // this package has an opinion about.
+  for (const name of [
+    'socketOptions',
+    'connectionBalanceConfig',
+    'udpListenerConfig',
+    'metadata',
+    'drainType',
+    'freebind',
+    'reusePort',
+    'useOriginalDst',
+    'filterChainMatcher',
+    'apiListener',
+    'trafficDirectionUnused',
+  ] as const) {
+    c.field(name)?.acknowledge()
+  }
+
+  const logs = c.field('accessLog')?.items() ?? []
+  for (const log of logs) {
+    log.field('filter')?.acknowledge()
+    log.field('typedConfig')?.acknowledge()
+  }
+
   return {
     ...sourced(c),
     name: c.strAt('name'),
     address: address ? socketAddress(address) : undefined,
+    // Each entry wraps an address the same way the listener's own does, so the same reader
+    // serves both and the tester can treat the list as the set of ports this listener has.
+    additionalAddresses: (c.field('additionalAddresses')?.items() ?? [])
+      .map((entry) => {
+        const inner = entry.field('address')
+        return inner ? socketAddress(inner) : undefined
+      })
+      .filter((a): a is SocketAddress => a !== undefined),
     trafficDirection: c
       .field('trafficDirection')
       ?.enumOf(TRAFFIC_DIRECTIONS),
     perConnectionBufferLimitBytes: c.numAt('perConnectionBufferLimitBytes'),
+    bindToPort: c.field('bindToPort')?.bool(),
+    statPrefix: c.strAt('statPrefix'),
+    listenerFiltersTimeout: c.strAt('listenerFiltersTimeout'),
+    continueOnListenerFiltersTimeout: c.field('continueOnListenerFiltersTimeout')?.bool(),
+    enableReusePort: c.field('enableReusePort')?.bool(),
+    tcpBacklogSize: c.numAt('tcpBacklogSize'),
+    accessLogNames: logs.map((log) => log.strAt('name')).filter((n): n is string => n !== undefined),
     listenerFilterNames: (c.field('listenerFilters')?.items() ?? [])
       .map((f) => {
         // A listener filter sniffs the first bytes of a connection to decide what it is.
@@ -819,17 +1086,62 @@ function listener(c: Cursor): Listener {
 
 // ---- clusters -------------------------------------------------------------------
 
+/** `region/zone/sub_zone`, with the parts that were written and no empty separators. */
+function localityOf(c: Cursor | undefined): string | undefined {
+  if (!c) return undefined
+  const parts = [c.strAt('region'), c.strAt('zone'), c.strAt('subZone')].filter(
+    (p): p is string => p !== undefined && p !== '',
+  )
+  return parts.length === 0 ? undefined : parts.join('/')
+}
+
 function endpointsOf(c: Cursor): Endpoint[] {
   const out: Endpoint[] = []
   // Redundant with the enclosing cluster's own name, and required to equal it. Read so
   // that a field present in every Envoy example does not show up as unrecognised.
   c.field('clusterName')
-  for (const locality of c.field('endpoints')?.items() ?? []) {
-    for (const lb of locality.field('lbEndpoints')?.items() ?? []) {
-      const address = lb.field('endpoint')?.field('address')
+  // How Envoy spreads load across the localities below, and how it degrades when they are
+  // unhealthy. Read for presence: it is a real policy and not a question about which
+  // endpoints exist.
+  c.field('policy')?.acknowledge()
+
+  for (const group of c.field('endpoints')?.items() ?? []) {
+    // A locality's own weight and priority describe the group rather than any one endpoint,
+    // and both are carried down: "this endpoint is in us-east-1a at priority 1" is the
+    // sentence somebody reading a failover config is trying to assemble, and it cannot be
+    // assembled from the endpoint alone.
+    const locality = localityOf(group.field('locality'))
+    const priority = group.numAt('priority')
+    const groupWeight = group.numAt('loadBalancingWeight')
+    group.field('lbEndpointsPolicy')?.acknowledge()
+    group.field('leastRequestLbConfig')?.acknowledge()
+
+    for (const lb of group.field('lbEndpoints')?.items() ?? []) {
+      // Endpoint metadata is how a subset load balancer picks between them, which is a
+      // question about the balancer rather than about the endpoint.
+      lb.field('metadata')?.acknowledge()
+      const weight = lb.numAt('loadBalancingWeight')
+      const healthStatus = lb.strAt('healthStatus')
+
+      const endpoint = lb.field('endpoint')
+      // The port health checking uses when it differs from the serving port. Read and left.
+      endpoint?.field('healthCheckConfig')?.acknowledge()
+      endpoint?.field('additionalAddresses')?.acknowledge()
+      const hostname = endpoint?.strAt('hostname')
+
+      const address = endpoint?.field('address')
       if (!address) continue
       const sock = socketAddress(address)
-      if (sock) out.push(sock)
+      if (!sock) continue
+
+      out.push({
+        ...sock,
+        hostname,
+        healthStatus,
+        loadBalancingWeight: weight ?? groupWeight,
+        locality,
+        priority,
+      })
     }
   }
   return out
@@ -863,16 +1175,66 @@ function cluster(c: Cursor): Cluster {
     outlierDetection,
     eds,
     c.field('typedExtensionProtocolOptions'),
+    // The load balancer's own settings, the upstream socket options, and the protocol
+    // blocks that predate `typed_extension_protocol_options`. Every one of them is tuning
+    // for a cluster whose identity and endpoints are already read above.
+    ...(
+      [
+        'commonLbConfig',
+        'lbSubsetConfig',
+        'ringHashLbConfig',
+        'maglevLbConfig',
+        'leastRequestLbConfig',
+        'roundRobinLbConfig',
+        'loadBalancingPolicy',
+        'upstreamConnectionOptions',
+        'upstreamBindConfig',
+        'transportSocketMatches',
+        'dnsResolvers',
+        'typedDnsResolverConfig',
+        'httpProtocolOptions',
+        'http2ProtocolOptions',
+        'commonHttpProtocolOptions',
+        'upstreamHttpProtocolOptions',
+        'preconnectPolicy',
+        'metadata',
+        'filters',
+        // Deprecated, or about the lifecycle of the connection pool rather than about who
+        // is in the cluster. Read so they land in "read but not checked", which is what a
+        // deprecated field Attaché has no opinion on actually is.
+        'protocolSelection',
+        'closeConnectionsOnHostHealthFailure',
+        'trackClusterStats',
+        'trackTimeoutBudgets',
+        'waitForWarmOnInit',
+        'cleanupInterval',
+        'useTcpForDnsLookups',
+        'dnsFailureRefreshRate',
+        'dnsJitter',
+        'connectionPoolPerDownstreamConnection',
+      ] as const
+    ).map((name) => c.field(name)),
   ]) {
     block?.acknowledge()
   }
 
+  // Scalars, so they cannot be acknowledged into the read-but-not-checked list — a scalar
+  // is reported only when nobody asks for it. Read into the model instead, which is the
+  // honest half of the same choice: they are available to anything that wants to show them
+  // rather than swallowed on the way past.
   return {
     ...sourced(c),
     name: c.require('name', 'Routes and stats refer to a cluster by name.')?.str(),
     type,
     lbPolicy: c.strAt('lbPolicy'),
     connectTimeout: c.strAt('connectTimeout'),
+    dnsLookupFamily: c.strAt('dnsLookupFamily'),
+    dnsRefreshRate: c.strAt('dnsRefreshRate'),
+    respectDnsTtl: c.field('respectDnsTtl')?.bool(),
+    perConnectionBufferLimitBytes: c.numAt('perConnectionBufferLimitBytes'),
+    maxRequestsPerConnection: c.numAt('maxRequestsPerConnection'),
+    ignoreHealthOnHostRemoval: c.field('ignoreHealthOnHostRemoval')?.bool(),
+    altStatName: c.strAt('altStatName'),
     endpoints: assignment ? endpointsOf(assignment) : [],
     usesEds: type === 'EDS' || eds !== undefined,
     tls: socket ? tlsContext(socket) : undefined,
@@ -961,6 +1323,23 @@ function bootstrapOf(root: Cursor): Bootstrap | undefined {
   // The admin interface keeps its own access log, separate from any listener's. Where a log
   // line lands is not something this can follow, so it is read for presence like the rest.
   admin?.field('accessLog')?.acknowledge()
+  admin?.field('profilePath')?.acknowledge()
+  admin?.field('ignoreGlobalConnLimit')?.acknowledge()
+
+  // How this Envoy describes itself to a management server, beyond the two names that
+  // identify it. The locality is what a mesh keys locality-aware routing on and the metadata
+  // is whatever the control plane agreed to put there; neither is readable from here.
+  for (const name of [
+    'metadata',
+    'locality',
+    'userAgentName',
+    'userAgentBuildVersion',
+    'extensions',
+    'clientFeatures',
+    'dynamicParameters',
+  ] as const) {
+    node?.field(name)?.acknowledge()
+  }
 
   const adminAddress = admin?.field('address')
 
@@ -974,6 +1353,43 @@ function bootstrapOf(root: Cursor): Bootstrap | undefined {
   }
 }
 
+/**
+ * The bootstrap blocks that sit beside `static_resources` and are none of this package's
+ * business.
+ *
+ * Runtime layers, stats sinks, the overload manager, the watchdogs: every one is documented
+ * Envoy, ordinary on a real deployment, and about how the process behaves rather than about
+ * where a request goes. They are read by name so they land in "read but not checked", which
+ * is what they are, instead of in the list that is supposed to read as "one of these might
+ * be your typo".
+ */
+const BOOTSTRAP_BLOCKS = [
+  'layeredRuntime',
+  'runtime',
+  'clusterManager',
+  'statsSinks',
+  'statsConfig',
+  'statsFlushInterval',
+  'statsFlushOnAdmin',
+  'tracing',
+  'overloadManager',
+  'watchdog',
+  'watchdogs',
+  'hdsConfig',
+  'flagsPath',
+  'defaultRegexEngine',
+  'bootstrapExtensions',
+  'fatalActions',
+  'applicationLogConfig',
+  'enableDispatcherStats',
+  'headerPrefix',
+  'useTcpForDnsLookups',
+  'typedDnsResolverConfig',
+  'defaultSocketInterface',
+  'inlineHeaders',
+  'perfTracingFilePath',
+] as const
+
 /** A plain bootstrap: listeners and clusters live under `static_resources`. */
 function fromBootstrap(root: Cursor): {
   listeners: Cursor[]
@@ -981,7 +1397,13 @@ function fromBootstrap(root: Cursor): {
   routeConfigs: Cursor[]
   bootstrap?: Bootstrap
 } {
+  for (const name of BOOTSTRAP_BLOCKS) root.field(name)?.acknowledge()
+
   const stat = root.field('staticResources')
+  // Secrets are certificates and keys. Named, never opened — `redact.ts` is the only thing
+  // here that goes near key material, and it walks the raw document rather than the model.
+  stat?.field('secrets')?.acknowledge()
+
   return {
     listeners: stat?.field('listeners')?.items() ?? [],
     clusters: stat?.field('clusters')?.items() ?? [],

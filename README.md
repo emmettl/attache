@@ -36,11 +36,20 @@ match. Each one points at a line.
 
 **Graph.** The listener → filter chain → route config → virtual host → route → cluster →
 endpoint cascade, with dangling references drawn as dashed and orphaned clusters flagged.
+A cluster is reached by more than routes, so the edges include the ones that are not: a
+`tcp_proxy` chain, an authorization filter, a gRPC access logger, a `request_mirror_policies`
+shadow target.
 
 **Route tester.** Give it a method, an authority, a path, headers and an SNI, and it walks
 the same cascade Envoy would. It shows the winner at each stage **and every candidate that
 lost, with the reason** — because "it went to the wrong place" is almost never a question
 about the winner.
+
+> It walks the cascade from the top, which includes the part before the route table. A
+> connection manager that sets `merge_slashes` or `strip_matching_host_port` rewrites the
+> request before a single route is looked at, so the tester applies those first and says
+> which one it applied — `//api//v1` matching `prefix: /api/v1` is bewildering until you are
+> told the slashes were merged four fields above the route.
 
 > Ask the *Virtual host precedence* example for `www.foo.com`. Four virtual hosts match it.
 > Envoy takes the most specific, not the first written, and moving them around in the file
@@ -65,6 +74,14 @@ That constraint is structural rather than a matter of discipline. The reader in
 left over at the end **is** the unrecognised list, derived from the code that did the
 reading. A field cannot be silently skipped, and a field that gets modelled later cannot be
 wrongly reported as unknown, because there is no second list to keep in sync.
+
+Structural is not the same as airtight, and it had one leak: a *scalar* that was fetched and
+then dropped appeared in neither list — read, so not unrecognised; never modelled, so not
+counted as read-but-not-checked. That is how a header matcher's `ignore_case` came to be
+asked for, thrown away, and left out of both totals while the route tester quietly failed to
+honour it. An acknowledged scalar is reported now, which is what closed it: a field the
+builder went and asked for by name and then declined to judge is exactly the claim the
+second list carries.
 
 ## Your config stays put
 
@@ -129,8 +146,16 @@ configs in the wild use both, and reading only one would silently ignore half th
 in a real config.
 
 Where the tester cannot know the answer it says so rather than guessing. A weighted cluster
-split, a `cluster_header` route, and a filter chain matching on IP ranges each produce a
-stated caveat instead of a confident wrong answer.
+split, a `cluster_header` route, and a filter chain matching on IP ranges or on ALPN each
+produce a stated caveat instead of a confident wrong answer — and so does a route matching
+on `runtime_fraction`, `grpc` or `tls_context`, none of which can be settled from a method,
+an authority and a path. A route carrying one still wins where Envoy would let it win; what
+it does not do is come back as a settled answer.
+
+The rule those all follow: a criterion that is read and not evaluated must reach the verdict
+as a sentence. The failure it exists to stop is not a crash but a silent disagreement — a
+chain naming `h2` outranked a chain naming nothing and won, correctly, for a client that had
+never said what it spoke, and the answer was presented as the answer for every client.
 
 ## Licence
 

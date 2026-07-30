@@ -175,10 +175,37 @@ static_resources:
 static_resources:
   listeners: []
   clusters: []
-stats_sinks:
+a_block_nobody_has_heard_of:
 - name: envoy.stat_sinks.statsd
 `)
     expect(summary).toMatch(/1 field unrecognised/)
+  })
+
+  // `stats_sinks` was what this test used to be written against, on the assumption that a
+  // bootstrap block outside the routing spine had to be unrecognised. It is not: it is
+  // documented Envoy, it is on most real deployments, and calling it unrecognised put it in
+  // the list that is supposed to read as "one of these might be your typo".
+  test('an ordinary bootstrap block is read, not called unrecognised', () => {
+    const { summary, unknowns } = analyse(`
+static_resources:
+  listeners: []
+  clusters: []
+stats_sinks:
+- name: envoy.stat_sinks.statsd
+layered_runtime:
+  layers:
+  - name: static_layer
+    static_layer: { envoy.reloadable_features.something: true }
+overload_manager:
+  refresh_interval: 0.25s
+`)
+    expect(unknowns.map((u) => [u.key, u.kind])).toEqual([
+      ['layered_runtime', 'unvalidated'],
+      ['stats_sinks', 'unvalidated'],
+      ['overload_manager', 'unvalidated'],
+    ])
+    expect(summary).toContain('3 fields read but not checked')
+    expect(summary).not.toMatch(/unrecognised/)
   })
 
   test('the summary keeps the two kinds apart', () => {
@@ -257,18 +284,78 @@ describe('a config that has been in production', () => {
   })
 
   test('reads what a proxying route does on the way upstream', () => {
-    expect(routes[3]!.forwarding).toEqual({
+    expect(routes[3]!.forwarding).toMatchObject({
       timeout: '15s',
       idleTimeout: undefined,
       prefixRewrite: '/',
       regexRewrite: undefined,
       hostRewriteLiteral: 'api.internal',
+      hostRewriteHeader: undefined,
+      autoHostRewrite: undefined,
+      appendXForwardedHost: true,
       hasRetryPolicy: true,
       retryOn: '5xx,reset',
       numRetries: 3,
     })
     // A route that does not proxy never gets that far, so there is nothing to report.
     expect(routes[0]!.forwarding).toBeUndefined()
+  })
+
+  test('reads the clusters a route mirrors to, which nothing routes to', () => {
+    // The shape that produced two wrong answers at once before this was read: the shadow
+    // cluster was reported as one nothing reaches, and a mirror naming a cluster that did
+    // not exist was not reported at all.
+    expect(routes[3]!.forwarding?.mirrorClusters).toMatchObject([
+      { cluster: 'api_shadow', by: 'request_mirror_policies' },
+    ])
+    expect(model.clusters.map((c) => c.name)).toContain('api_shadow')
+  })
+
+  test('reads a virtual host beyond its domains', () => {
+    const host = hcm.routeConfig!.virtualHosts[0]!
+    expect(host.requireTls).toBe('EXTERNAL_ONLY')
+    expect(host.includeRequestAttemptCount).toBe(true)
+    expect(host.perRequestBufferLimitBytes).toBe(32768)
+  })
+
+  test('reads what the connection manager does to a request before it routes', () => {
+    expect(hcm.mergeSlashes).toBe(true)
+    expect(hcm.normalizePath).toBe(true)
+    expect(hcm.stripMatchingHostPort).toBe(true)
+    expect(hcm.pathWithEscapedSlashesAction).toBe('UNESCAPE_AND_REDIRECT')
+    expect(hcm.xffNumTrustedHops).toBe(1)
+    expect(hcm.maxConnectionDuration).toBe('600s')
+    expect(hcm.maxHeadersCount).toBe(100)
+  })
+
+  test('reads the route config settings that decide how a host is matched', () => {
+    expect(hcm.routeConfig!.ignorePortInHostMatching).toBe(true)
+    expect(hcm.routeConfig!.validateClusters).toBe(false)
+  })
+
+  test('reads the listener beyond the one address it binds', () => {
+    expect(listener.additionalAddresses.map((a) => a.portValue)).toEqual([15007])
+    expect(listener.statPrefix).toBe('inbound')
+    expect(listener.listenerFiltersTimeout).toBe('5s')
+    expect(listener.tcpBacklogSize).toBe(1024)
+    expect(listener.accessLogNames).toEqual(['envoy.access_loggers.file'])
+  })
+
+  test('reads an endpoint with the locality and health it was declared under', () => {
+    const shadow = model.clusters.find((c) => c.name === 'api_shadow')!
+    expect(shadow.endpoints).toMatchObject([
+      {
+        address: '10.0.2.9',
+        portValue: 8080,
+        hostname: 'shadow-1.internal',
+        healthStatus: 'HEALTHY',
+        loadBalancingWeight: 1,
+        locality: 'us-east-1/us-east-1a',
+        priority: 0,
+      },
+    ])
+    expect(shadow.dnsLookupFamily).toBeUndefined()
+    expect(model.clusters[0]!.dnsLookupFamily).toBe('V4_ONLY')
   })
 
   test('reads a direct response body', () => {
@@ -327,24 +414,62 @@ describe('a config that has been in production', () => {
     // ordinary: a sidecar's source-range chain match, the TLS parameters on both ends of it,
     // the CORS and hash policy on a route, and the admin interface's own access log.
     expect(unknowns.map((u) => u.key)).toEqual([
+      // Bootstrap blocks about how the process behaves rather than where a request goes.
+      'layered_runtime',
+      'stats_sinks',
+      'overload_manager',
+      // The listener: a socket option, and the access logger it keeps for itself.
+      'socket_options',
       'typed_config',
+      'typed_config',
+      // Header mutations, at all four levels that can carry them.
+      'request_headers_to_add',
+      'response_headers_to_remove',
+      'request_headers_to_add',
+      'retry_policy',
+      'rate_limits',
+      'response_headers_to_remove',
+      'decorator',
+      // Route match criteria this tester reads and will not answer for. The route carrying
+      // them says so in the verdict rather than in silence.
+      'runtime_fraction',
       'cors',
       'hash_policy',
+      'upgrade_configs',
+      'max_stream_duration',
+      // The mirror policy's own sampling. The cluster it names IS read — that is the point.
+      'runtime_fraction',
+      // The filters, whose configuration is nobody's business here.
       'typed_config',
       'typed_config',
       'typed_config',
+      'local_reply_config',
+      'set_current_client_cert_details',
+      // The chain match criteria that are about an address rather than a request.
       'source_prefix_ranges',
+      'source_type',
+      // TLS on both ends, and the EDS config source.
       'tls_params',
       'eds_cluster_config',
       'tls_params',
       'validation_context_sds_secret_config',
+      // The cluster's health, resilience and load balancing settings.
       'health_checks',
       'circuit_breakers',
       'outlier_detection',
       'typed_extension_protocol_options',
+      'common_lb_config',
+      'upstream_connection_options',
+      'policy',
+      'metadata',
+      'health_check_config',
+      // The node's own identity beyond the two names that identify it.
+      'metadata',
+      'locality',
+      // The admin interface's access log.
       'access_log',
     ])
-    expect(summary).toContain('16 fields read but not checked')
+    expect(summary).toContain('42 fields read but not checked')
     expect(summary).not.toMatch(/valid|✓/i)
   })
 })

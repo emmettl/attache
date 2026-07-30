@@ -480,3 +480,292 @@ describe('what the winning route does besides choosing a cluster', () => {
     expect(result.explanation).not.toContain('disables')
   })
 })
+
+// Cases where the tester used to answer confidently and wrongly.
+//
+// Each of these was a silent disagreement with Envoy rather than a crash or a blank: the
+// tester produced a winner, printed no caveat, and was simply not describing the proxy the
+// config would build. That is the worst failure available to a tool whose whole pitch is
+// answering where a request actually goes, so each one has a test here.
+describe('answers that were confidently wrong', () => {
+  test('a config with no listeners says so, rather than asking for a port', () => {
+    const model = analyse('static_resources:\n  clusters:\n  - name: a\n').model
+    const result = matchRequest(model, {
+      authority: 'example.com',
+      path: '/',
+      method: 'GET',
+      headers: {},
+    })
+    expect(result.outcome).toBe('no-listener')
+    expect(result.explanation).toContain('no listeners')
+    // The old wording, which described a config nobody was looking at.
+    expect(result.explanation).not.toContain('more than one listener')
+  })
+
+  test('a chain matching on ALPN wins with a caveat rather than in silence', () => {
+    const model = analyse(`
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - name: h2only
+      filter_chain_match: { application_protocols: ["h2"] }
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config: { name: r, virtual_hosts: [{ name: v, domains: ["*"], routes: [{ match: { prefix: "/" }, route: { cluster: h2 } }] }] }
+    - name: plain
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config: { name: r2, virtual_hosts: [{ name: v, domains: ["*"], routes: [{ match: { prefix: "/" }, route: { cluster: plain } }] }] }
+  clusters:
+  - name: h2
+  - name: plain
+`).model
+    const result = ask(model, {})
+    // ALPN counts towards specificity in Envoy, so the h2 chain really does win for an h2
+    // client — and this tester is never told which client. It used to present that as the
+    // answer for every client, with nothing said.
+    expect(result.filterChain?.name).toBe('h2only')
+    expect(result.caveats.join(' ')).toContain('`application_protocols`')
+  })
+
+  test('a header matcher written `ignore_case` is matched without case', () => {
+    const model = withHosts(
+      `            - name: v
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                  headers:
+                  - name: x-env
+                    string_match: { exact: "PROD", ignore_case: true }
+                route: { cluster: a }`,
+      'a',
+    )
+    expect(ask(model, { headers: { 'x-env': 'prod' } }).outcome).toBe('matched')
+    expect(ask(model, { headers: { 'x-env': 'staging' } }).outcome).toBe('no-route')
+  })
+
+  test('a matcher arm nothing here recognises is not treated as a presence check', () => {
+    const headers = withHosts(
+      `            - name: v
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                  headers:
+                  - name: x-new
+                    some_future_match: { foo: 1 }
+                route: { cluster: a }`,
+      'a',
+    )
+    // Not "the header is missing", which is what a presence check would have said and which
+    // reads as a settled answer about a criterion nothing here evaluated.
+    expect(ask(headers, { headers: { 'x-new': 'yes' } }).routeAttempts[0]!.reason).toContain(
+      'not evaluated here',
+    )
+
+    const query = withHosts(
+      `            - name: v
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                  query_parameters:
+                  - name: v
+                    some_future_match: { foo: 1 }
+                route: { cluster: a }`,
+      'a',
+    )
+    expect(ask(query, { path: '/?v=1' }).routeAttempts[0]!.reason).toContain('not evaluated here')
+  })
+
+  test('a route action naming no cluster is said in words, not printed as undefined', () => {
+    const model = withHosts(
+      `            - name: v
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/" }
+                route:
+                  weighted_clusters:
+                    clusters: []`,
+      'a',
+    )
+    const result = ask(model, {})
+    expect(result.explanation).toContain('names no cluster')
+    expect(result.explanation).not.toContain('undefined')
+  })
+
+  test('a route matching on something unevaluated does not present a settled winner', () => {
+    const model = withHosts(
+      `            - name: v
+              domains: ["*"]
+              routes:
+              - name: canary
+                match:
+                  prefix: "/"
+                  runtime_fraction: { default_value: { numerator: 50, denominator: HUNDRED } }
+                route: { cluster: a }
+              - name: rest
+                match: { prefix: "/" }
+                route: { cluster: a }`,
+      'a',
+    )
+    const result = ask(model, {})
+    // It still wins — half the time is not never — but the other half of the traffic goes to
+    // the route below it, and that used to go entirely unsaid.
+    expect(result.route?.name).toBe('canary')
+    expect(result.caveats.join(' ')).toContain('`runtime_fraction`')
+    expect(result.caveats.join(' ')).toContain('fall through')
+  })
+})
+
+describe('what the connection manager does before it routes', () => {
+  const listener = (settings: string, routes: string) => `
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 8443 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+${settings}
+          route_config:
+            name: r
+${routes}
+  clusters:
+  - name: a
+`
+
+  const ROUTES = `            virtual_hosts:
+            - name: v
+              domains: ["api.example.com"]
+              routes:
+              - match: { path: /api/v1 }
+                route: { cluster: a }`
+
+  test('merged slashes are applied, and said', () => {
+    const model = analyse(listener('          merge_slashes: true', ROUTES)).model
+    const result = matchRequest(model, {
+      authority: 'api.example.com',
+      path: '//api//v1',
+      method: 'GET',
+      port: 8443,
+      headers: {},
+    })
+    expect(result.outcome).toBe('matched')
+    expect(result.rewrites.join(' ')).toContain('`/api/v1`')
+  })
+
+  test('and are not applied when the listener does not ask for them', () => {
+    const model = analyse(listener('          stat_prefix: x', ROUTES)).model
+    const result = matchRequest(model, {
+      authority: 'api.example.com',
+      path: '//api//v1',
+      method: 'GET',
+      port: 8443,
+      headers: {},
+    })
+    expect(result.outcome).toBe('no-route')
+    expect(result.rewrites).toEqual([])
+  })
+
+  test('`normalize_path` resolves dot segments before the route is chosen', () => {
+    const model = analyse(listener('          normalize_path: true', ROUTES)).model
+    const result = matchRequest(model, {
+      authority: 'api.example.com',
+      path: '/api/v2/../v1',
+      method: 'GET',
+      port: 8443,
+      headers: {},
+    })
+    expect(result.outcome).toBe('matched')
+    expect(result.rewrites.join(' ')).toContain('`/api/v1`')
+  })
+
+  test('the port comes off the authority when the listener strips it', () => {
+    // Without the strip, `api.example.com:8443` is matched against the domain list verbatim
+    // and reaches nothing — which is correct, surprising, and exactly what somebody comes
+    // to the tester to find out.
+    const plain = analyse(listener('          stat_prefix: x', ROUTES)).model
+    const asked = {
+      authority: 'api.example.com:8443',
+      path: '/api/v1',
+      method: 'GET',
+      port: 8443,
+      headers: {},
+    }
+    expect(matchRequest(plain, asked).outcome).toBe('no-virtual-host')
+
+    const stripped = analyse(listener('          strip_matching_host_port: true', ROUTES)).model
+    const result = matchRequest(stripped, asked)
+    expect(result.outcome).toBe('matched')
+    expect(result.rewrites.join(' ')).toContain('strip_matching_host_port')
+  })
+
+  test('or when the route config ignores it', () => {
+    const model = analyse(
+      listener('          stat_prefix: x', `            ignore_port_in_host_matching: true\n${ROUTES}`),
+    ).model
+    const result = matchRequest(model, {
+      authority: 'api.example.com:8443',
+      path: '/api/v1',
+      method: 'GET',
+      port: 8443,
+      headers: {},
+    })
+    expect(result.outcome).toBe('matched')
+    expect(result.rewrites.join(' ')).toContain('ignore_port_in_host_matching')
+  })
+
+  test('an escaped slash is flagged rather than decoded', () => {
+    const model = analyse(
+      listener('          path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT', ROUTES),
+    ).model
+    const result = matchRequest(model, {
+      authority: 'api.example.com',
+      path: '/api%2Fv1',
+      method: 'GET',
+      port: 8443,
+      headers: {},
+    })
+    expect(result.caveats.join(' ')).toContain('escaped slash')
+  })
+})
+
+test('a listener is found on any of the addresses it binds', () => {
+  const model = analyse(`
+static_resources:
+  listeners:
+  - name: dual
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+    additional_addresses:
+    - address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config: { name: r, virtual_hosts: [{ name: v, domains: ["*"], routes: [{ match: { prefix: "/" }, route: { cluster: a } }] }] }
+  - name: other
+    address: { socket_address: { address: 0.0.0.0, port_value: 9000 } }
+  clusters:
+  - name: a
+`).model
+  const ask8080 = matchRequest(model, {
+    authority: 'x',
+    path: '/',
+    method: 'GET',
+    port: 8080,
+    headers: {},
+  })
+  expect(ask8080.outcome).toBe('matched')
+  expect(ask8080.listener?.name).toBe('dual')
+})

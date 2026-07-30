@@ -138,6 +138,19 @@ export const PRODUCTION = `
 node:
   id: sidecar~10.0.1.7~api-7f9c
   cluster: api
+  locality: { region: us-east-1, zone: us-east-1a }
+  metadata: { ROLE: sidecar }
+
+layered_runtime:
+  layers:
+  - name: static_layer
+    static_layer: { envoy.reloadable_features.no_extension_lookup_by_name: false }
+
+stats_sinks:
+- name: envoy.stat_sinks.statsd
+
+overload_manager:
+  refresh_interval: 0.25s
 
 admin:
   access_log:
@@ -161,8 +174,23 @@ static_resources:
   - name: virtual_inbound
     traffic_direction: INBOUND
     per_connection_buffer_limit_bytes: 32768
+    stat_prefix: inbound
+    listener_filters_timeout: 5s
+    continue_on_listener_filters_timeout: true
+    enable_reuse_port: true
+    tcp_backlog_size: 1024
     address:
       socket_address: { address: 0.0.0.0, port_value: 15006 }
+    additional_addresses:
+    - address:
+        socket_address: { address: 0.0.0.0, port_value: 15007 }
+    socket_options:
+    - { level: 1, name: 9, int_value: 1 }
+    access_log:
+    - name: envoy.access_loggers.file
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+        path: /dev/stdout
     listener_filters:
     - name: envoy.filters.listener.tls_inspector
       typed_config:
@@ -195,9 +223,33 @@ static_resources:
           server_header_transformation: PASS_THROUGH
           stream_idle_timeout: 300s
           request_timeout: 0s
+          request_headers_timeout: 10s
+          drain_timeout: 30s
+          delayed_close_timeout: 1s
+          normalize_path: true
+          merge_slashes: true
+          path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT
+          strip_matching_host_port: true
+          via: envoy
+          server_name: envoy
+          xff_num_trusted_hops: 1
+          skip_xff_append: false
+          generate_request_id: true
+          preserve_external_request_id: true
+          always_set_request_id_in_response: false
+          proxy_100_continue: true
+          max_request_headers_kb: 96
+          forward_client_cert_details: SANITIZE_SET
+          set_current_client_cert_details: { uri: true }
+          local_reply_config:
+            mappers:
+            - filter: { status_code_filter: { comparison: { value: { default_value: 503 } } } }
           common_http_protocol_options:
             idle_timeout: 3600s
             headers_with_underscores_action: REJECT_REQUEST
+            max_connection_duration: 600s
+            max_stream_duration: 0s
+            max_headers_count: 100
           http_protocol_options:
             accept_http_10: true
             default_host_for_http_10: legacy.internal
@@ -221,12 +273,28 @@ static_resources:
             enabled: false
           route_config:
             name: inbound_routes
+            validate_clusters: false
+            ignore_port_in_host_matching: true
+            most_specific_header_mutations_wins: true
+            request_headers_to_add:
+            - header: { key: x-envoy-hop, value: inbound }
+            response_headers_to_remove: [server]
             virtual_hosts:
             - name: api
               domains: ["*"]
+              require_tls: EXTERNAL_ONLY
+              include_request_attempt_count: true
+              per_request_buffer_limit_bytes: 32768
+              retry_policy: { num_retries: 1 }
+              rate_limits:
+              - actions: [{ remote_address: {} }]
+              request_headers_to_add:
+              - header: { key: x-vhost, value: api }
               routes:
               - name: health
                 match: { path: /healthz }
+                decorator: { operation: healthz }
+                response_headers_to_remove: [x-envoy-upstream-service-time]
                 direct_response:
                   status: 200
                   body: { inline_string: "OK" }
@@ -249,12 +317,24 @@ static_resources:
                     substitution: '/documentation/\\1'
                   response_code: MOVED_PERMANENTLY
               - name: api
-                match: { prefix: / }
+                match:
+                  prefix: /
+                  runtime_fraction:
+                    default_value: { numerator: 100, denominator: HUNDRED }
+                  grpc: {}
                 route:
                   cluster: api_service
                   timeout: 15s
                   prefix_rewrite: /
                   host_rewrite_literal: api.internal
+                  append_x_forwarded_host: true
+                  max_stream_duration: { max_stream_duration: 0s }
+                  upgrade_configs:
+                  - upgrade_type: websocket
+                  request_mirror_policies:
+                  - cluster: api_shadow
+                    runtime_fraction:
+                      default_value: { numerator: 5, denominator: HUNDRED }
                   hash_policy:
                   - header: { header_name: x-user-id }
                   cors:
@@ -276,6 +356,16 @@ static_resources:
   - name: api_service
     type: EDS
     connect_timeout: 0.25s
+    dns_lookup_family: V4_ONLY
+    respect_dns_ttl: true
+    per_connection_buffer_limit_bytes: 32768
+    max_requests_per_connection: 1000
+    ignore_health_on_host_removal: true
+    alt_stat_name: api
+    common_lb_config:
+      healthy_panic_threshold: { value: 50 }
+    upstream_connection_options:
+      tcp_keepalive: { keepalive_probes: 3 }
     eds_cluster_config:
       eds_config: { ads: {} }
       service_name: api|8080
@@ -307,6 +397,27 @@ static_resources:
     outlier_detection:
       consecutive_5xx: 5
       interval: 10s
+  # The shadow target of the mirror policy above. A cluster reached by something that is not
+  # a route, which is the shape that kept coming back reported as one nothing reaches.
+  - name: api_shadow
+    type: STRICT_DNS
+    connect_timeout: 0.25s
+    load_assignment:
+      cluster_name: api_shadow
+      policy: { overprovisioning_factor: 140 }
+      endpoints:
+      - locality: { region: us-east-1, zone: us-east-1a }
+        priority: 0
+        load_balancing_weight: 10
+        lb_endpoints:
+        - health_status: HEALTHY
+          load_balancing_weight: 1
+          metadata: { filter_metadata: { envoy.lb: { canary: true } } }
+          endpoint:
+            hostname: shadow-1.internal
+            health_check_config: { port_value: 8081 }
+            address:
+              socket_address: { address: 10.0.2.9, port_value: 8080 }
 `
 
 /** An admin port dump, in the envelopes Envoy wraps its resources in. */

@@ -1,6 +1,7 @@
 import type {
   ConfigModel,
   FilterChain,
+  HttpConnectionManager,
   Listener,
   Route,
   RouteAction,
@@ -68,6 +69,15 @@ export interface MatchResult {
    * Non-empty means the result is a best effort, and the UI should say so.
    */
   caveats: string[]
+  /**
+   * What the connection manager did to the request before any of the routing below.
+   *
+   * Separate from `caveats` because it is the opposite kind of statement. A caveat says the
+   * answer might be wrong; each of these says the answer is right and here is the step that
+   * would otherwise make it look wrong — a request to `//api//v1` matching `prefix: /api/v1`
+   * is bewildering until you are told the slashes were merged four fields above the route.
+   */
+  rewrites: string[]
 
   listener?: Listener
   listenerAttempts: Attempt<Listener>[]
@@ -135,6 +145,68 @@ function decode(value: string): string {
 
 const fold = (value: string, caseSensitive: boolean) =>
   caseSensitive ? value : value.toLowerCase()
+
+/**
+ * `/a//b` → `/a/b`, leaving the query alone.
+ *
+ * Envoy's `merge_slashes`, which runs before route matching and therefore before anything
+ * this file does. Only the path is touched: a doubled slash inside a query value is data.
+ */
+function mergeSlashes(path: string): string {
+  const cut = path.indexOf('?')
+  const head = cut === -1 ? path : path.slice(0, cut)
+  const tail = cut === -1 ? '' : path.slice(cut)
+  return `${head.replace(/\/{2,}/g, '/')}${tail}`
+}
+
+/**
+ * RFC 3986's `remove_dot_segments`, which is what Envoy's `normalize_path` performs.
+ *
+ * Applied rather than merely reported because it decides the answer: `/api/../admin` reaches
+ * an `/admin` route on a listener that normalises and an `/api` route on one that does not,
+ * and that difference is the whole question somebody is asking the tester.
+ */
+function removeDotSegments(path: string): string {
+  const cut = path.indexOf('?')
+  const head = cut === -1 ? path : path.slice(0, cut)
+  const tail = cut === -1 ? '' : path.slice(cut)
+  if (!head.startsWith('/')) return path
+
+  const segments = head.split('/')
+  const out: string[] = []
+  for (let i = 1; i < segments.length; i++) {
+    const segment = segments[i]!
+    const last = i === segments.length - 1
+    if (segment === '.') {
+      // A trailing `.` or `..` leaves the directory slash behind: `/a/b/..` is `/a/`.
+      if (last) out.push('')
+      continue
+    }
+    if (segment === '..') {
+      out.pop()
+      if (last) out.push('')
+      continue
+    }
+    out.push(segment)
+  }
+  return `/${out.join('/')}${tail}`
+}
+
+/**
+ * `:authority` with the port removed, and the port that was on it.
+ *
+ * IPv6 literals are why this is not a `split(':')`: `[::1]:8080` has four colons and only
+ * the last one separates a port.
+ */
+function splitAuthority(authority: string): { host: string; port?: number } {
+  const cut = authority.lastIndexOf(':')
+  if (cut === -1 || cut < authority.lastIndexOf(']')) return { host: authority }
+  const digits = authority.slice(cut + 1)
+  // `Number('')` is zero, so a trailing colon would otherwise read as port 0 and get
+  // stripped as though the client had sent one.
+  if (!/^\d+$/.test(digits)) return { host: authority }
+  return { host: authority.slice(0, cut), port: Number(digits) }
+}
 
 /** RE2 is anchored at both ends for route matching; JS regexes are not. */
 function fullMatch(pattern: string, value: string): boolean {
@@ -266,18 +338,23 @@ function whyNotRoute(route: Route, request: TestRequest): string | undefined {
   }
 
   for (const matcher of route.match.headers) {
-    const name = matcher.name.toLowerCase()
-    const value = headers[name]
-    const present = value !== undefined
-
-    let holds: boolean
-    if (matcher.kind === 'present') holds = present
-    else if (!present) holds = matcher.treatMissingAsEmpty ? matchString(matcher.kind, matcher.value ?? '', '') : false
-    else holds = matchString(matcher.kind, matcher.value ?? '', value)
-
+    // Asked before the comparison rather than after it: `matchString` answers `false` for an
+    // unmodelled kind, which is indistinguishable from a matcher that was evaluated and did
+    // not hold, and the difference is the whole point of the kind existing.
     if (matcher.kind === 'unmodelled') {
       return `its \`${matcher.name}\` header matcher is not evaluated here`
     }
+
+    const name = matcher.name.toLowerCase()
+    const value = headers[name]
+    const present = value !== undefined
+    const compare = (against: string) =>
+      matchString(matcher.kind, matcher.value ?? '', against, matcher.ignoreCase)
+
+    let holds: boolean
+    if (matcher.kind === 'present') holds = present
+    else if (!present) holds = matcher.treatMissingAsEmpty ? compare('') : false
+    else holds = compare(value)
 
     if (holds === matcher.invert) {
       return matcher.invert
@@ -290,16 +367,15 @@ function whyNotRoute(route: Route, request: TestRequest): string | undefined {
 
   const query = queryOf(request.path)
   for (const matcher of route.match.queryParameters) {
-    const value = query.get(matcher.name)
-    if (matcher.kind === 'present') {
-      if (value === undefined) return `the query has no \`${matcher.name}\``
-      continue
-    }
     if (matcher.kind === 'unmodelled') {
-      return `its \`${matcher.name}\` query matcher is not evaluated here`
+      return matcher.label === undefined
+        ? `its \`${matcher.name}\` query matcher is not evaluated here`
+        : `its \`${matcher.name}\` query matcher writes \`${matcher.label}\`, which is not evaluated here`
     }
+    const value = query.get(matcher.name)
     if (value === undefined) return `the query has no \`${matcher.name}\``
-    if (!matchString(matcher.kind, matcher.value ?? '', value)) {
+    if (matcher.kind === 'present') continue
+    if (!matchString(matcher.kind, matcher.value ?? '', value, matcher.ignoreCase)) {
       return `query \`${matcher.name}\` is \`${value}\``
     }
   }
@@ -307,20 +383,31 @@ function whyNotRoute(route: Route, request: TestRequest): string | undefined {
   return undefined
 }
 
+/**
+ * One `StringMatcher` arm against one value.
+ *
+ * `ignoreCase` folds both sides for the four literal arms and is deliberately not applied to
+ * the regex, which is where Envoy also stops applying it: RE2 carries its own case rules
+ * inside the pattern.
+ */
 function matchString(
   kind: 'exact' | 'prefix' | 'suffix' | 'contains' | 'safeRegex' | 'present' | 'unmodelled',
   pattern: string,
   value: string,
+  ignoreCase = false,
 ): boolean {
+  const a = ignoreCase ? value.toLowerCase() : value
+  const b = ignoreCase ? pattern.toLowerCase() : pattern
+
   switch (kind) {
     case 'exact':
-      return value === pattern
+      return a === b
     case 'prefix':
-      return value.startsWith(pattern)
+      return a.startsWith(b)
     case 'suffix':
-      return value.endsWith(pattern)
+      return a.endsWith(b)
     case 'contains':
-      return value.includes(pattern)
+      return a.includes(b)
     case 'safeRegex':
       return fullMatch(pattern, value)
     case 'present':
@@ -382,7 +469,13 @@ function selectChain(
     // to a line they can read; "matches on criteria this tester does not evaluate (source or
     // destination IP ranges)", which is what this said before, tells them only that the
     // answer might be wrong and leaves them to find out where.
-    const unevaluated = match?.unevaluatedCriteria ?? []
+    const unevaluated = [...(match?.unevaluatedCriteria ?? [])]
+    // ALPN belongs on that list and was missing from it, which was not a cosmetic gap: a
+    // chain naming `h2` counts as more specific than one naming nothing, so it WON — with
+    // no caveat — against a request that never said what protocol it spoke. The tester was
+    // answering for an HTTP/2 client and presenting it as the answer for every client.
+    if ((match?.applicationProtocols.length ?? 0) > 0) unevaluated.push('application_protocols')
+
     if (unevaluated.length > 0 || match?.hasUnmodelledCriteria) {
       const on =
         unevaluated.length > 0
@@ -480,6 +573,7 @@ const empty = (outcome: Outcome, explanation: string, extra: Partial<MatchResult
   outcome,
   explanation,
   caveats: [],
+  rewrites: [],
   listenerAttempts: [],
   chainAttempts: [],
   hostAttempts: [],
@@ -487,18 +581,84 @@ const empty = (outcome: Outcome, explanation: string, extra: Partial<MatchResult
   ...extra,
 })
 
+/**
+ * The request as the router sees it, after the connection manager has had it.
+ *
+ * Only the two transformations with exactly one reading are applied. `path_with_escaped_
+ * slashes_action` is stated instead: it percent-decodes and may answer with a redirect
+ * rather than a route, and a tester that guessed at which would be inventing an answer where
+ * a sentence was available.
+ */
+function normalise(
+  request: TestRequest,
+  hcm: HttpConnectionManager,
+  listener: Listener,
+  rewrites: string[],
+  caveats: string[],
+): TestRequest {
+  let { path, authority } = request
+
+  if (hcm.mergeSlashes === true) {
+    const merged = mergeSlashes(path)
+    if (merged !== path) {
+      rewrites.push(`\`merge_slashes\` collapsed the path to \`${merged}\` before routing.`)
+      path = merged
+    }
+  }
+
+  if (hcm.normalizePath === true) {
+    const normalised = removeDotSegments(path)
+    if (normalised !== path) {
+      rewrites.push(`\`normalize_path\` resolved the path to \`${normalised}\` before routing.`)
+      path = normalised
+    }
+  }
+
+  if (hcm.pathWithEscapedSlashesAction !== undefined && /%2f/i.test(path)) {
+    caveats.push(
+      `This listener sets \`path_with_escaped_slashes_action: ${hcm.pathWithEscapedSlashesAction}\` and the path contains an escaped slash, which this tester does not apply — Envoy may rewrite or redirect this request before any route sees it.`,
+    )
+  }
+
+  const { host, port } = splitAuthority(authority)
+  const stripped =
+    hcm.stripAnyHostPort === true ||
+    (hcm.stripMatchingHostPort === true && port !== undefined && portsOf(listener).includes(port))
+  if (stripped && port !== undefined) {
+    rewrites.push(
+      `\`${hcm.stripAnyHostPort === true ? 'strip_any_host_port' : 'strip_matching_host_port'}\` removed \`:${port}\` from the authority, so virtual hosts are matched against \`${host}\`.`,
+    )
+    authority = host
+  }
+
+  return { ...request, path, authority }
+}
+
+/** Every port a listener accepts on, `address` and `additional_addresses` together. */
+function portsOf(listener: Listener): number[] {
+  return [listener.address, ...listener.additionalAddresses]
+    .map((address) => address?.portValue)
+    .filter((port): port is number => port !== undefined)
+}
+
 export function matchRequest(model: ConfigModel, request: TestRequest): MatchResult {
   const caveats: string[] = []
+  const rewrites: string[] = []
 
   // ---- listener ---------------------------------------------------------------
   const listenerAttempts: Attempt<Listener>[] = model.listeners.map((listener, index) => {
-    const port = listener.address?.portValue
-    const matched = request.port === undefined ? model.listeners.length === 1 : port === request.port
+    const ports = portsOf(listener)
+    const matched =
+      request.port === undefined ? model.listeners.length === 1 : ports.includes(request.port)
     return {
       candidate: listener,
       index,
       matched,
-      reason: matched ? undefined : `it listens on port ${port ?? 'nothing this tester can read'}`,
+      reason: matched
+        ? undefined
+        : ports.length === 0
+          ? 'its address is not one this tester can read a port from'
+          : `it listens on port ${ports.join(' and ')}`,
     }
   })
 
@@ -506,9 +666,14 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
   if (!listener) {
     return empty(
       'no-listener',
-      request.port === undefined
-        ? 'This config has more than one listener, so the request needs a port to pick between them.'
-        : `Nothing is listening on port ${request.port}.`,
+      // Three cases, and they used to be two: a config with NO listeners answered "this
+      // config has more than one listener, so the request needs a port to pick between
+      // them", which is a sentence about a config nobody was looking at.
+      model.listeners.length === 0
+        ? 'This config defines no listeners, so there is nothing for a request to arrive on.'
+        : request.port === undefined
+          ? 'This config has more than one listener, so the request needs a port to pick between them.'
+          : `Nothing is listening on port ${request.port}.`,
       { listenerAttempts },
     )
   }
@@ -527,8 +692,11 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
     }
   }
 
+  // `caveats` and `rewrites` go in by reference, so anything pushed onto them further down
+  // the cascade is still here when a later branch spreads `base`.
   const base = {
     caveats,
+    rewrites,
     listener,
     listenerAttempts,
     filterChain: chain.chosen,
@@ -579,6 +747,16 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
     }
   }
 
+  // ---- what the connection manager does before it routes ----------------------
+  //
+  // Envoy rewrites the path and the authority before a route or a virtual host is looked at,
+  // and every one of these fields was being read past. The result was a tester that
+  // disagreed with the running proxy for reasons sitting in the same filter it had already
+  // walked into: `//api//v1` failing to match `prefix: /api/v1` on a listener that merges
+  // slashes, and `foo.com:8443` failing to reach a virtual host claiming `foo.com` on one
+  // that strips the port.
+  request = normalise(request, hcm, listener, rewrites, caveats)
+
   // ---- route config -----------------------------------------------------------
   let routeConfig = hcm.routeConfig
   if (!routeConfig && hcm.rdsRouteConfigName !== undefined) {
@@ -598,10 +776,25 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
   }
 
   // ---- virtual host -----------------------------------------------------------
+  //
+  // The domain list is matched against the authority verbatim, port and all, which is the
+  // part that catches people out: `foo.com` does not claim `foo.com:8443`. The route config
+  // can turn that off, and when it has, the port comes off here.
+  let authority = request.authority
+  if (routeConfig.ignorePortInHostMatching === true) {
+    const { host, port } = splitAuthority(authority)
+    if (port !== undefined) {
+      rewrites.push(
+        `\`ignore_port_in_host_matching\` on \`${routeConfig.name ?? 'this route config'}\` means virtual hosts are matched against \`${host}\` rather than \`${authority}\`.`,
+      )
+      authority = host
+    }
+  }
+
   const scored = routeConfig.virtualHosts.map((host, index) => ({
     host,
     index,
-    score: bestDomain(host, request.authority),
+    score: bestDomain(host, authority),
   }))
 
   let winner: (typeof scored)[number] | undefined
@@ -626,14 +819,14 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
         ? undefined
         : entry.score
           ? `\`${winner!.score!.pattern}\` on \`${winner!.host.name ?? 'another virtual host'}\` is more specific than \`${entry.score.pattern}\``
-          : `none of its domains cover \`${request.authority}\``,
+          : `none of its domains cover \`${authority}\``,
   }))
 
   if (!winner) {
     return {
       ...empty(
         'no-virtual-host',
-        `No virtual host in \`${routeConfig.name ?? 'this route config'}\` claims \`${request.authority}\` — Envoy would return 404.`,
+        `No virtual host in \`${routeConfig.name ?? 'this route config'}\` claims \`${authority}\` — Envoy would return 404.`,
       ),
       ...base,
       routeConfig,
@@ -656,15 +849,33 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
     routeAttempts.push({ candidate: route, index, matched: why === undefined, reason: why })
     if (why !== undefined) continue
 
+    // The criteria this tester cannot settle do not stop a route matching — a route with
+    // `runtime_fraction: 50%` matches half the time, and half the time is not never. What
+    // they stop is the answer being presented as certain, which is what used to happen: the
+    // route came back as the confident winner with nothing said about the coin toss.
+    const unevaluated = route.match.unevaluatedCriteria
+    if (unevaluated.length > 0 || route.match.hasUnmodelledCriteria) {
+      const on =
+        unevaluated.length > 0
+          ? `${unevaluated.map((n) => `\`${n}\``).join(', ')}, which this tester does not evaluate`
+          : 'criteria this tester has no model for'
+      caveats.push(
+        `The winning route also matches on ${on}, so Envoy might fall through to a later route for a given request.`,
+      )
+    }
+
     const action = route.action
+    // An empty `weighted_clusters` is a config Envoy rejects, and this used to answer it
+    // with "→ cluster `undefined`". Naming no cluster at all is the honest form, and
+    // `describe` below says so in words.
     const cluster =
       action.kind === 'cluster'
-        ? action.cluster
+        ? action.cluster || undefined
         : action.kind === 'weightedClusters'
-          ? action.clusters[0]?.name
+          ? action.clusters[0]?.name || undefined
           : undefined
 
-    if (action.kind === 'weightedClusters') {
+    if (action.kind === 'weightedClusters' && action.clusters.length > 0) {
       caveats.push(
         `The winning route splits traffic across ${action.clusters.map((c) => `\`${c.name}\``).join(', ')} by weight, so which upstream a given request reaches is decided at request time.`,
       )
@@ -790,7 +1001,9 @@ function describe(
   switch (route.action.kind) {
     case 'cluster':
     case 'weightedClusters':
-      return `Matched ${where} → cluster \`${cluster}\`.${also}`
+      return cluster === undefined
+        ? `Matched ${where}, which is a \`route\` action that names no cluster.${also}`
+        : `Matched ${where} → cluster \`${cluster}\`.${also}`
     case 'clusterHeader':
       return `Matched ${where}, which picks its cluster from the \`${route.action.header}\` header.${also}`
     case 'redirect': {
