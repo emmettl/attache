@@ -35,7 +35,7 @@ interface Context {
  * Bounded rather than recursive-until-done, because a self-referential anchor is a document
  * a person can write and this should not be where it becomes a hang.
  */
-function deref(doc: Document, node: Node | null): Node | null {
+export function deref(doc: Document, node: Node | null): Node | null {
   let current = node
   for (let hops = 0; hops < 32 && isAlias(current); hops++) {
     current = (current.resolve(doc) ?? null) as Node | null

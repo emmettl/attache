@@ -1,4 +1,13 @@
-import { LineCounter, isMap, isScalar, isSeq, parseDocument, type Document, type Node } from 'yaml'
+import {
+  LineCounter,
+  isMap,
+  isScalar,
+  isSeq,
+  parseAllDocuments,
+  parseDocument,
+  type Document,
+  type Node,
+} from 'yaml'
 import type { Diagnostic } from './diagnostics.js'
 import type { Range } from './source.js'
 
@@ -76,6 +85,26 @@ function detectFormat(root: Node | null): ConfigFormat {
     }
   }
   return 'bootstrap'
+}
+
+/**
+ * EVERY document in the source, sharing one offset map.
+ *
+ * `parse` below reads the first document, which is the right reading for modelling: a
+ * config is one document, and the second one in the file is not the config anybody asked
+ * about. The redactor needs the opposite reading, because its remit is not the config that
+ * was modelled — it is the TEXT that is about to travel, all of it. Somebody who pastes a
+ * pair of Kubernetes manifests separated by `---` shares both halves, and a private key in
+ * the second half is a private key in the link.
+ *
+ * The `LineCounter` is shared deliberately: it is fed by the lexer over the whole string,
+ * so every range that comes back is an offset into the original text rather than into the
+ * document it happened to be found in.
+ */
+export function parseAll(text: string): { docs: Document[]; positions: Positions } {
+  const lineCounter = new LineCounter()
+  const docs = parseAllDocuments(text, { lineCounter })
+  return { docs, positions: positionsFrom(lineCounter) }
 }
 
 export function parse(text: string): ParseResult {

@@ -106,6 +106,19 @@ for key material first and will not produce a link until it has been replaced wi
 re-serialising, so comments, quoting and indentation survive: what you send is still the
 file you recognise.
 
+The scan follows anchors, and it reads every document in the file rather than the first.
+Both were leaks: `private_key: *shared` found nothing, because an alias is neither a map nor
+a sequence nor a scalar and the walk stepped straight over it — and a key in the second half
+of a `---`-separated paste was never looked at, because the *config* is one document while
+the *text that travels* is all of them. Neither failed loudly. The config parsed, the warning
+never appeared, and the link looked exactly like a clean one.
+
+Which is why the redactor now checks its own work: it re-scans the result and reports whether
+every position it found holds the mask, and the app refuses to make a link when that comes
+back false. This is the one place in the codebase where being quietly wrong costs somebody a
+private key rather than a wrong answer on a screen, so it is the one place that verifies
+instead of trusting.
+
 ## Two packages
 
 | | |

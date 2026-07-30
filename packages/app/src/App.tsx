@@ -231,6 +231,7 @@ function Actions() {
   const setRemember = useStore((s) => s.setRemember)
   const [pendingSecrets, setPendingSecrets] = useState<string | null>(null)
   const [pendingClear, setPendingClear] = useState(false)
+  const [stuckSecrets, setStuckSecrets] = useState(false)
 
   const onShare = () => {
     const secrets = findSecrets(text)
@@ -299,13 +300,37 @@ function Actions() {
           <div className="dialogue-actions">
             <button
               onClick={() => {
+                // The redactor checks its own work, and this refuses to make a link when
+                // that check fails. There is no reading of "mostly redacted" worth acting
+                // on: the cost of being wrong here is somebody's private key in a URL they
+                // have already sent, which no amount of closing the tab takes back.
+                const { text: clean, complete } = redact(text)
+                if (!complete) {
+                  setPendingSecrets(null)
+                  setStuckSecrets(true)
+                  return
+                }
                 setPendingSecrets(null)
-                void share(redact(text).text)
+                void share(clean)
               }}
             >
               Redact and share
             </button>
             <button onClick={() => setPendingSecrets(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {stuckSecrets && (
+        <div className="dialogue" role="alertdialog">
+          <p>Attaché could not remove all of it, so it has not made a link.</p>
+          <p className="muted">
+            The redactor checks its own work and something survived the pass — which is a bug
+            here rather than a problem with your config. Download the file and take the key
+            material out by hand if you need to share it.
+          </p>
+          <div className="dialogue-actions">
+            <button onClick={() => setStuckSecrets(false)}>Close</button>
           </div>
         </div>
       )}
