@@ -419,6 +419,17 @@ function matchString(
 
 // ---- filter chains ------------------------------------------------------------------
 
+/**
+ * An exact name beats every wildcard, whatever their lengths.
+ *
+ * Expressed as a value nothing can reach rather than as a large one. It was 1000, against
+ * wildcards scored by the length of what follows the star — so a pattern longer than a
+ * thousand characters outranked an exact match. No DNS name gets near that, which makes it
+ * a cliff nobody was going to fall off; it is gone because "the exact name wins" should be
+ * a fact about the code rather than a fact about how long domains happen to be.
+ */
+const EXACT_SNI = Number.MAX_SAFE_INTEGER
+
 /** SNI supports one leading wildcard, and an exact name beats it. */
 function serverNameRank(patterns: string[], sni: string | undefined): number | null {
   if (patterns.length === 0) return 0 // no criterion — matches anything, least specific
@@ -427,10 +438,12 @@ function serverNameRank(patterns: string[], sni: string | undefined): number | n
   let best: number | null = null
   for (const pattern of patterns) {
     const domain = pattern.toLowerCase()
-    if (domain === host) return 1000
+    if (domain === host) return EXACT_SNI
     if (domain.startsWith('*.')) {
       const rest = domain.slice(1)
       if (host.length > rest.length && host.endsWith(rest)) {
+        // At least 2, since `rest` keeps the dot — so a wildcard can never score the 0 that
+        // means "this chain states no SNI criterion at all".
         best = Math.max(best ?? 0, rest.length)
       }
     }
@@ -598,19 +611,26 @@ function normalise(
 ): TestRequest {
   let { path, authority } = request
 
-  if (hcm.mergeSlashes === true) {
-    const merged = mergeSlashes(path)
-    if (merged !== path) {
-      rewrites.push(`\`merge_slashes\` collapsed the path to \`${merged}\` before routing.`)
-      path = merged
-    }
-  }
-
+  // `normalize_path` FIRST, then `merge_slashes`, which is the order Envoy's
+  // `maybeNormalizePath` runs them in — canonicalPath, and only then mergeSlashes.
+  //
+  // The order is not cosmetic and this file had it backwards. `/a//../b` resolves to `/a/b`
+  // the right way round, because the `..` cancels the empty segment the doubled slash made;
+  // collapse first and the `..` eats `a` instead, giving `/b`. Two different routes, and the
+  // tester was confidently naming the wrong one on any config that sets both.
   if (hcm.normalizePath === true) {
     const normalised = removeDotSegments(path)
     if (normalised !== path) {
       rewrites.push(`\`normalize_path\` resolved the path to \`${normalised}\` before routing.`)
       path = normalised
+    }
+  }
+
+  if (hcm.mergeSlashes === true) {
+    const merged = mergeSlashes(path)
+    if (merged !== path) {
+      rewrites.push(`\`merge_slashes\` collapsed the path to \`${merged}\` before routing.`)
+      path = merged
     }
   }
 
