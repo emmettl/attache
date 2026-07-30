@@ -1,5 +1,5 @@
 import { describeSecrets, findSecrets, redact } from '@attache/core'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Editor } from './Editor.js'
 import { EXAMPLES } from './examples.js'
 import { Findings } from './Findings.js'
@@ -95,20 +95,67 @@ export function App() {
         <Splitter split={split} setSplit={setSplit} />
 
         <section className="pane result-pane">
-          <nav className="tabs">
+          {/*
+            A real tablist, which is what this always was. Three buttons with the selected
+            one distinguished by a CSS class tells a screen reader nothing: it announced
+            three identical buttons, with no way to know which view was showing or that
+            pressing one swapped the panel underneath. Now it says "Findings, tab, 1 of 3,
+            selected", and Left/Right/Home/End move between them the way a tablist is
+            expected to — with the roving tabindex that makes Tab step PAST the group rather
+            than through it.
+          */}
+          <nav className="tabs" role="tablist" aria-label="Results">
             {TABS.map((entry) => (
               <button
                 key={entry.id}
+                id={`tab-${entry.id}`}
+                role="tab"
+                aria-selected={tab === entry.id}
+                aria-controls="result-panel"
+                tabIndex={tab === entry.id ? 0 : -1}
                 className={tab === entry.id ? 'active' : ''}
                 onClick={() => setTab(entry.id)}
+                onKeyDown={(event) => {
+                  const step =
+                    event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : undefined
+                  const at = TABS.findIndex((t) => t.id === tab)
+                  const next =
+                    step !== undefined
+                      ? (at + step + TABS.length) % TABS.length
+                      : event.key === 'Home'
+                        ? 0
+                        : event.key === 'End'
+                          ? TABS.length - 1
+                          : undefined
+                  if (next === undefined) return
+                  event.preventDefault()
+                  const id = TABS[next]!.id
+                  setTab(id)
+                  // Every tab button is rendered whichever is selected, so the element is
+                  // already there to focus — no waiting for the re-render that flips the
+                  // tabindex, and focus is allowed onto a `-1` element programmatically.
+                  document.getElementById(`tab-${id}`)?.focus()
+                }}
               >
                 {entry.title}
               </button>
             ))}
           </nav>
-          {tab === 'findings' && <Findings />}
-          {tab === 'graph' && <GraphView />}
-          {tab === 'route' && <RouteTester />}
+          {/*
+            The wrapper exists for `role="tabpanel"` and carries the pane's flex sizing so
+            that adding it changes nothing about the layout — `.panel-body` inside each view
+            is still the thing that scrolls.
+          */}
+          <div
+            className="panel"
+            id="result-panel"
+            role="tabpanel"
+            aria-labelledby={`tab-${tab}`}
+          >
+            {tab === 'findings' && <Findings />}
+            {tab === 'graph' && <GraphView />}
+            {tab === 'route' && <RouteTester />}
+          </div>
         </section>
       </div>
 
@@ -237,6 +284,82 @@ async function drop(event: React.DragEvent, setText: (text: string) => void) {
  * the page, and looks like something the browser is telling you rather than something this
  * app is asking.
  */
+/**
+ * The four dialogues, which were four divs with a role on them and nothing else.
+ *
+ * `role="alertdialog"` is a promise about behaviour, not a label, and none of it was being
+ * kept. Opening one left focus on the button behind it, so a screen reader announced
+ * nothing; there was no accessible name; Escape did nothing; Tab walked out of the dialogue
+ * and into the editor behind it; and closing dropped focus on `<body>`, which puts a
+ * keyboard user back at the top of the document. Two of the four are the warning that a
+ * private key is about to travel and the confirmation that destroys work with no undo —
+ * which are exactly the two where being unable to read or dismiss the thing matters.
+ *
+ * Deliberately NOT `aria-modal`, and deliberately no focus trap. These are positioned
+ * popovers with no backdrop: the rest of the page stays visible and clickable, so claiming
+ * the background is inert would be telling assistive technology something the mouse can
+ * plainly disprove. This is the non-modal dialog pattern — focus moves in, Escape gets you
+ * out, focus goes back where it came from — which is what they actually are.
+ */
+function Dialogue({
+  label,
+  alert = false,
+  onDismiss,
+  children,
+}: {
+  /** The accessible name. The content is announced too; this says which dialogue it is. */
+  label: string
+  /** `alertdialog` for a decision, `dialog` for something merely being handed to you. */
+  alert?: boolean
+  onDismiss: () => void
+  children: ReactNode
+}) {
+  const box = useRef<HTMLDivElement>(null)
+  // Held in a ref so the effect below can run once on mount. Every caller passes an inline
+  // arrow, so depending on it directly would re-run the effect on every render and yank
+  // focus back to the first button while somebody was tabbing through.
+  const dismiss = useRef(onDismiss)
+  dismiss.current = onDismiss
+
+  useEffect(() => {
+    const opener = document.activeElement
+    // The first focusable, unless something asked for it. A confirmation whose first button
+    // is the destructive one would otherwise put focus on `Clear it` and turn a stray Enter
+    // into a config nobody can get back — and this app has no other copy, which is the whole
+    // reason that dialogue exists.
+    const target =
+      box.current?.querySelector<HTMLElement>('[data-initial-focus]') ??
+      box.current?.querySelector<HTMLElement>('button, input, [href]')
+    target?.focus()
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      dismiss.current()
+    }
+    document.addEventListener('keydown', onKeyDown)
+
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      // Back where it came from, but only if that is still somewhere real — the element can
+      // have been unmounted by whatever the dialogue just did, and focusing `<body>` is how
+      // this got to be worth fixing.
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus()
+    }
+  }, [])
+
+  return (
+    <div
+      ref={box}
+      className="dialogue"
+      role={alert ? 'alertdialog' : 'dialog'}
+      aria-label={label}
+    >
+      {children}
+    </div>
+  )
+}
+
 function Actions() {
   const text = useStore((s) => s.text)
   const setText = useStore((s) => s.setText)
@@ -285,7 +408,7 @@ function Actions() {
       </button>
 
       {pendingClear && (
-        <div className="dialogue" role="alertdialog">
+        <Dialogue label="Clear this config?" alert onDismiss={() => setPendingClear(false)}>
           <p>Clear this config?</p>
           <p className="muted">
             The editor goes back to the example and the copy kept in this browser is deleted.
@@ -301,13 +424,19 @@ function Actions() {
             >
               Clear it
             </button>
-            <button onClick={() => setPendingClear(false)}>Cancel</button>
+            <button data-initial-focus onClick={() => setPendingClear(false)}>
+              Cancel
+            </button>
           </div>
-        </div>
+        </Dialogue>
       )}
 
       {pendingSecrets && (
-        <div className="dialogue" role="alertdialog">
+        <Dialogue
+          label="This config contains key material"
+          alert
+          onDismiss={() => setPendingSecrets(null)}
+        >
           <p>{pendingSecrets}</p>
           <p className="muted">
             A share link keeps the config out of any server log — it lives after the `#`, which
@@ -335,11 +464,11 @@ function Actions() {
             </button>
             <button onClick={() => setPendingSecrets(null)}>Cancel</button>
           </div>
-        </div>
+        </Dialogue>
       )}
 
       {stuckSecrets && (
-        <div className="dialogue" role="alertdialog">
+        <Dialogue label="Attaché could not redact this config" alert onDismiss={() => setStuckSecrets(false)}>
           <p>Attaché could not remove all of it, so it has not made a link.</p>
           <p className="muted">
             The redactor checks its own work and something survived the pass — which is a bug
@@ -349,18 +478,18 @@ function Actions() {
           <div className="dialogue-actions">
             <button onClick={() => setStuckSecrets(false)}>Close</button>
           </div>
-        </div>
+        </Dialogue>
       )}
 
       {shareLink && (
-        <div className="dialogue" role="dialog">
+        <Dialogue label="Share link" onDismiss={clearShare}>
           <p>Link ready — {shareLink.length.toLocaleString()} characters.</p>
           <input readOnly value={shareLink} onFocus={(e) => e.currentTarget.select()} />
           <div className="dialogue-actions">
             <button onClick={() => void navigator.clipboard?.writeText(shareLink)}>Copy</button>
             <button onClick={clearShare}>Close</button>
           </div>
-        </div>
+        </Dialogue>
       )}
     </div>
   )
