@@ -169,6 +169,43 @@ export function searchGraph(graph: Graph, query: string): GraphSearch | null {
   return { matched, relevant: new Set([...reach(parents), ...reach(children)]) }
 }
 
+/** Everything `nodeAtLine` needs, so a test can hand it three fields rather than a layout. */
+type Locatable = Pick<GraphNode, 'id' | 'range' | 'problem'>
+
+/**
+ * The node whose block contains a line — the innermost one.
+ *
+ * Lives here rather than in `GraphView` because it is a question about the graph and not
+ * about the drawing, and because as a component-local `useMemo` it was untestable without a
+ * DOM. It is a pure function of some ranges and a number; there is no reason for it to have
+ * been anywhere a browser was required to reach it.
+ *
+ * SMALLEST span wins, because node ranges NEST. A caret on a route's line is inside that
+ * route, its virtual host, its route config, its filter chain and its listener all at once,
+ * and the innermost is the only one of the five that says anything the line itself did not.
+ *
+ * Dangling placeholders are excluded for the reason the search mask excludes them: their
+ * range is BORROWED from whatever referred to them, so a missing cluster carries the range
+ * of the route that named it. Left in, it ties with that route on span and can win — putting
+ * the caret on a route and marking a cluster that does not exist.
+ *
+ * Ties among real nodes go to the first, which is source order: two nodes with identical
+ * ranges are a parent and an only child, and `buildGraph` emits the parent first.
+ */
+export function nodeAtLine(nodes: readonly Locatable[], line: number | null): string | null {
+  if (line === null) return null
+
+  let best: Locatable | undefined
+  for (const node of nodes) {
+    if (node.problem === 'dangling') continue
+    if (line < node.range.line || line > node.range.endLine) continue
+    if (best === undefined || span(node) < span(best)) best = node
+  }
+  return best?.id ?? null
+}
+
+const span = (node: Locatable): number => node.range.endLine - node.range.line
+
 /**
  * Order each column by the average position of what it connects to.
  *
