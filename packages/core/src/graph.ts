@@ -105,10 +105,22 @@ export function buildGraph(model: ConfigModel): Graph {
 
   const clusterIds = new Map<string, string>()
   const referenced = new Set<string>()
+  /**
+   * Which node id belongs to which cluster NAME.
+   *
+   * The orphan pass at the bottom used to ask whether `node.label` had been referenced,
+   * which is the name for every cluster that has one and the words "(unnamed cluster)" for
+   * every cluster that does not — so an unnamed cluster was reliably accused of being one
+   * nothing reaches, on top of the missing-name error it already had.
+   */
+  const nameOf = new Map<string, string>()
 
   model.clusters.forEach((cluster, index) => {
     const id = `cluster:${index}`
-    if (cluster.name !== undefined) clusterIds.set(cluster.name, id)
+    if (cluster.name !== undefined) {
+      clusterIds.set(cluster.name, id)
+      nameOf.set(id, cluster.name)
+    }
     nodes.push({
       id,
       kind: 'cluster',
@@ -124,6 +136,19 @@ export function buildGraph(model: ConfigModel): Graph {
         id: endpointId,
         kind: 'endpoint',
         label: `${endpoint.address ?? '?'}:${endpoint.portValue ?? '?'}`,
+        // The locality and the asserted health, which is what a failover config is made of
+        // and what an address alone cannot tell you. `HEALTHY` is left off: it is the
+        // default assertion and repeating it on every endpoint says nothing.
+        detail:
+          [
+            endpoint.locality,
+            endpoint.healthStatus === 'HEALTHY' ? undefined : endpoint.healthStatus,
+            endpoint.priority === undefined || endpoint.priority === 0
+              ? undefined
+              : `priority ${endpoint.priority}`,
+          ]
+            .filter((part): part is string => part !== undefined)
+            .join(' · ') || undefined,
         path: endpoint.path,
         range: endpoint.range,
       })
@@ -197,7 +222,16 @@ export function buildGraph(model: ConfigModel): Graph {
                 }))
               : []
 
+        // Shadow traffic is drawn as an edge like any other, labelled for what it is. The
+        // request does not go there in the sense the rest of the graph means, but a copy of
+        // it does, and a cluster this config sends every matching request to is not one the
+        // picture should be leaving out.
+        for (const mirror of route.forwarding?.mirrorClusters ?? []) {
+          targets.push({ name: mirror.cluster, label: 'mirror' })
+        }
+
         for (const target of targets) {
+          if (target.name === '') continue
           referenced.add(target.name)
           const existing = clusterIds.get(target.name)
           const to = existing ?? missingCluster(target.name, route)
@@ -326,7 +360,10 @@ export function buildGraph(model: ConfigModel): Graph {
 
   for (const node of nodes) {
     if (node.kind !== 'cluster' || node.problem) continue
-    if (!referenced.has(node.label)) node.problem = 'orphan'
+    const name = nameOf.get(node.id)
+    // A cluster with no name cannot be referred to by name, so nothing about it can be
+    // concluded from nothing referring to it. The missing `name` is already an error.
+    if (name !== undefined && !referenced.has(name)) node.problem = 'orphan'
   }
 
   return { nodes, edges }

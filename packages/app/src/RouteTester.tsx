@@ -65,6 +65,21 @@ export function RouteTester() {
         <>
           <p className={`verdict ${match.outcome}`}>{match.explanation}</p>
 
+          {/*
+            Above the caveats, and styled apart from them, because it is the opposite kind of
+            statement. A caveat says the answer might be wrong. A rewrite says the answer is
+            right and here is the step that would otherwise make it look wrong — which is the
+            more useful half when a request lands somewhere the route table does not appear
+            to send it.
+          */}
+          {match.rewrites.length > 0 && (
+            <ul className="rewrites">
+              {match.rewrites.map((rewrite, i) => (
+                <li key={i}>{rewrite}</li>
+              ))}
+            </ul>
+          )}
+
           {match.caveats.length > 0 && (
             <ul className="caveats">
               {match.caveats.map((caveat, i) => (

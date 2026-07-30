@@ -83,11 +83,36 @@ export interface Listener extends Sourced {
   name?: string
   address?: SocketAddress
   /**
+   * The other addresses this listener also binds.
+   *
+   * Modelled rather than merely read because it is a routing fact and nothing else: a
+   * listener with `additional_addresses` accepts connections on every port in the list, and
+   * a tester that knew only about `address` answered "nothing is listening on port 8443"
+   * about a listener sitting two lines above the port it was asked about.
+   */
+  additionalAddresses: SocketAddress[]
+  /**
    * INBOUND or OUTBOUND. A sidecar sets it and a front proxy usually does not, so it is
    * often the quickest way to tell which kind of config you have been handed.
    */
   trafficDirection?: string
   perConnectionBufferLimitBytes?: number
+  /**
+   * `bind_to_port: false` — the listener never takes a socket of its own.
+   *
+   * Worth having by name: it is how a virtual listener is reached only by another listener
+   * redirecting to it, so "nothing is listening on that port" is the expected state rather
+   * than a mistake.
+   */
+  bindToPort?: boolean
+  statPrefix?: string
+  /** How long the listener filters get before the connection proceeds regardless. */
+  listenerFiltersTimeout?: string
+  continueOnListenerFiltersTimeout?: boolean
+  enableReusePort?: boolean
+  tcpBacklogSize?: number
+  /** Access loggers on the listener itself, by name — separate from any HCM's. */
+  accessLogNames: string[]
   /**
    * Listener filter names in order — the TLS inspector, the HTTP inspector, original_dst.
    *
@@ -194,6 +219,15 @@ export interface FilterChainMatch extends Sourced {
   serverNames: string[]
   destinationPort?: number
   transportProtocol?: string
+  /**
+   * ALPN, which is negotiated during the handshake rather than written in a request.
+   *
+   * Read, and deliberately not evaluated: the route tester is handed a method, an authority
+   * and a path, none of which say what protocol the client offered. It still counts towards
+   * specificity, because that is what Envoy does — a chain naming `h2` beats one naming
+   * nothing — so a config using it gets Envoy's answer for an h2 client together with a
+   * caveat saying which criterion was assumed rather than checked.
+   */
   applicationProtocols: string[]
   /**
    * Criteria on this chain that are recognised and deliberately not evaluated, spelled the
@@ -233,12 +267,60 @@ export interface HttpConnectionManager extends Sourced {
   useRemoteAddress?: boolean
   addUserAgent?: boolean
   /**
+   * How many hops of `x-forwarded-for` to trust, counting from the right.
+   *
+   * The other half of `use_remote_address`, and useless without it: together they decide
+   * which address in the chain Envoy calls the client, which is what every rate limit and
+   * every access log line downstream is keyed on.
+   */
+  xffNumTrustedHops?: number
+  skipXffAppend?: boolean
+  /**
+   * What Envoy does to the path BEFORE it matches a route. All three change where a request
+   * goes, which is why they are here rather than filed with the rest of the HTTP settings.
+   *
+   * `normalizePath` removes `.` and `..` segments; `mergeSlashes` collapses runs of `/`;
+   * `pathWithEscapedSlashesAction` decides what happens to an escaped slash. The first two
+   * are string operations with one reading, and the route tester applies them. The third
+   * involves percent-decoding and possibly a redirect, so it is stated rather than applied.
+   */
+  normalizePath?: boolean
+  mergeSlashes?: boolean
+  pathWithEscapedSlashesAction?: string
+  /**
+   * Whether the port comes off `:authority` before routing, and under what condition.
+   *
+   * `stripAnyHostPort` removes any port; `stripMatchingHostPort` removes it only when it is
+   * the port this listener is bound to. Neither is the default, which is the part that
+   * surprises people: a virtual host claiming `foo.com` does not match a request to
+   * `foo.com:8443` unless one of these is set or the route config ignores the port.
+   */
+  stripAnyHostPort?: boolean
+  stripMatchingHostPort?: boolean
+  /** The `via` header this proxy adds, and the `Server` header it sends. */
+  via?: string
+  serverName?: string
+  generateRequestId?: boolean
+  preserveExternalRequestId?: boolean
+  alwaysSetRequestIdInResponse?: boolean
+  proxy100Continue?: boolean
+  /** SANITIZE, FORWARD_ONLY, APPEND_FORWARD, SANITIZE_SET, ALWAYS_FORWARD_ONLY. */
+  forwardClientCertDetails?: string
+  maxRequestHeadersKb?: number
+  /**
    * Timeouts as they were written — `300s`, `0s`. Not parsed into milliseconds: `0s` and
    * absent mean different things to Envoy, and a number could not tell them apart.
    */
   idleTimeout?: string
   streamIdleTimeout?: string
   requestTimeout?: string
+  requestHeadersTimeout?: string
+  drainTimeout?: string
+  delayedCloseTimeout?: string
+  /** From `common_http_protocol_options`, beside the idle timeout already read there. */
+  maxConnectionDuration?: string
+  maxStreamDuration?: string
+  maxHeadersCount?: number
   /** ALLOW, REJECT_REQUEST, DROP_HEADER — what happens to `x_underscored_headers`. */
   headersWithUnderscoresAction?: string
   /** OVERWRITE, APPEND_IF_ABSENT, PASS_THROUGH. */
@@ -313,6 +395,22 @@ export interface UpgradeConfig {
 export interface RouteConfig extends Sourced {
   name?: string
   virtualHosts: VirtualHost[]
+  /**
+   * Whether the port in `:authority` is ignored when matching virtual host domains.
+   *
+   * A routing fact, and one of the few places a single boolean four levels up decides
+   * whether a request 404s: with it unset, `foo.com:8443` is matched against the domain
+   * list verbatim, and a virtual host claiming `foo.com` does not claim it.
+   */
+  ignorePortInHostMatching?: boolean
+  ignorePathParametersInPathMatching?: boolean
+  /**
+   * `validate_clusters` — whether Envoy refuses the config when a route names a cluster it
+   * does not have. Read because it says what a dangling reference will actually do here.
+   */
+  validateClusters?: boolean
+  mostSpecificHeaderMutationsWins?: boolean
+  maxDirectResponseBodySizeBytes?: number
 }
 
 export interface VirtualHost extends Sourced {
@@ -320,6 +418,19 @@ export interface VirtualHost extends Sourced {
   /** Authority patterns: exact, `*.suffix`, `prefix.*`, or `*`. */
   domains: string[]
   routes: Route[]
+  /** NONE, EXTERNAL_ONLY, ALL — whether this host redirects plaintext requests. */
+  requireTls?: string
+  includeRequestAttemptCount?: boolean
+  includeAttemptCountInResponse?: boolean
+  perRequestBufferLimitBytes?: number
+  /**
+   * HTTP filters this virtual host reconfigures or switches off, by name.
+   *
+   * The same routing-adjacent fact as the one on a route, at the level above it: turning
+   * `ext_authz` off for a whole virtual host is how an internal-only host is kept out of the
+   * authorization path, and it is just as invisible from any route's match.
+   */
+  typedPerFilterConfig: PerFilterOverride[]
 }
 
 export interface Route extends Sourced {
@@ -356,6 +467,10 @@ export interface RouteForwarding {
   prefixRewrite?: string
   /** The `Host` the upstream sees, when the route rewrites it. */
   hostRewriteLiteral?: string
+  /** The other two arms of the same oneof. */
+  hostRewriteHeader?: string
+  autoHostRewrite?: boolean
+  appendXForwardedHost?: boolean
   /** The other arm of the path rewrite oneof. Mutually exclusive with `prefixRewrite`. */
   regexRewrite?: RegexRewrite
   /** Whether a `retry_policy` is configured at all, which is most of what is worth saying. */
@@ -363,6 +478,15 @@ export interface RouteForwarding {
   /** What it retries on — `5xx`, `reset,connect-failure`. */
   retryOn?: string
   numRetries?: number
+  /**
+   * Clusters this route also sends a copy of every matching request to.
+   *
+   * `request_mirror_policies` is shadow traffic: the response is discarded, so it decides
+   * nothing about where the request goes, but the cluster is genuinely reached and genuinely
+   * defined here. Leaving it unread was the same bug `ext_authz` and `tcp_proxy` each had —
+   * a cluster this config calls on every request, reported as one nothing reaches.
+   */
+  mirrorClusters: ClusterRef[]
 }
 
 export interface PerFilterOverride {
@@ -387,6 +511,18 @@ export interface RouteMatch extends Sourced {
   caseSensitive: boolean
   headers: HeaderMatcher[]
   queryParameters: QueryMatcher[]
+  /**
+   * Criteria on this route that are recognised and deliberately not evaluated, spelled the
+   * way they were written — `runtime_fraction`, `grpc`, `tls_context`, `dynamic_metadata`.
+   *
+   * The same idea as the one on `FilterChainMatch`, and it was needed here for the same
+   * reason: none of them can be answered from a method, an authority and a path, so a route
+   * carrying one may not be the route Envoy picks. Saying nothing meant the tester returned
+   * a confident winner for a route that matches half the time by design.
+   */
+  unevaluatedCriteria: string[]
+  /** Whether the match ALSO turns on something nothing here has heard of at all. */
+  hasUnmodelledCriteria: boolean
 }
 
 export type PathSpecifier =
@@ -492,12 +628,25 @@ export interface HeaderMatcher extends Sourced {
   invert: boolean
   /** Whether a missing header satisfies an inverted matcher. Envoy defaults this false. */
   treatMissingAsEmpty: boolean
+  /**
+   * `string_match.ignore_case`, which Envoy applies to exact, prefix, suffix and contains
+   * and explicitly not to a regex.
+   *
+   * Carried rather than dropped. It used to be read purely so it would not be reported as an
+   * unrecognised field, on the strength of a comment claiming the route tester stated the
+   * limitation — which it did not, anywhere, so a matcher written `exact: PROD, ignore_case:
+   * true` was quietly failed against a request sending `prod`.
+   */
+  ignoreCase: boolean
 }
 
 export interface QueryMatcher extends Sourced {
   name: string
   kind: 'present' | 'exact' | 'prefix' | 'suffix' | 'contains' | 'safeRegex' | 'unmodelled'
   value?: string
+  ignoreCase: boolean
+  /** Why the matcher is not evaluated, for the `unmodelled` kind. */
+  label?: string
 }
 
 // ---- clusters -------------------------------------------------------------------
@@ -509,6 +658,15 @@ export interface Cluster extends Sourced {
   lbPolicy?: string
   /** As written — `0.25s`, `5s`. Not parsed; kept so the graph can show it. */
   connectTimeout?: string
+  /** AUTO, V4_ONLY, V6_ONLY, V4_PREFERRED, ALL — and the rest of the DNS settings. */
+  dnsLookupFamily?: string
+  dnsRefreshRate?: string
+  respectDnsTtl?: boolean
+  perConnectionBufferLimitBytes?: number
+  maxRequestsPerConnection?: number
+  ignoreHealthOnHostRemoval?: boolean
+  /** The name this cluster's stats are emitted under, when it is not the cluster name. */
+  altStatName?: string
   endpoints: Endpoint[]
   /** True when endpoints come from EDS, so an empty `endpoints` is expected. */
   usesEds: boolean
@@ -523,4 +681,14 @@ export interface Cluster extends Sourced {
 export interface Endpoint extends Sourced {
   address?: string
   portValue?: number
+  /** The name this endpoint answers to, when it is not the address. */
+  hostname?: string
+  /** HEALTHY, UNHEALTHY, DRAINING, TIMEOUT, DEGRADED — as the config asserts it. */
+  healthStatus?: string
+  /** This endpoint's share of the traffic, and its locality's. */
+  loadBalancingWeight?: number
+  /** The locality it was declared under, as `region/zone/sub_zone`. */
+  locality?: string
+  /** Localities are tried in priority order, 0 first. */
+  priority?: number
 }

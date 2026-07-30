@@ -38,3 +38,21 @@ describe('what a node says under its name', () => {
     expect(detailOf(PRODUCTION, 'route', 'api')).toBe('prefix /')
   })
 })
+
+describe('what the graph accuses a cluster of', () => {
+  test('a cluster with no name is not called one nothing reaches', () => {
+    // Orphan status used to be decided by asking whether the node's LABEL had been
+    // referenced — which is the cluster's name when it has one and the words "(unnamed
+    // cluster)" when it does not. So an unnamed cluster was reliably accused, on top of the
+    // missing-name error it already had.
+    const graph = buildGraph(analyse('static_resources:\n  clusters:\n  - connect_timeout: 1s\n').model)
+    expect(graph.nodes.map((n) => n.problem)).toEqual([undefined])
+  })
+
+  test('a mirrored cluster gets an edge, labelled for what it is', () => {
+    const graph = buildGraph(analyse(PRODUCTION).model)
+    const shadow = graph.nodes.find((n) => n.kind === 'cluster' && n.label === 'api_shadow')!
+    expect(shadow.problem).toBeUndefined()
+    expect(graph.edges.some((e) => e.to === shadow.id && e.label === 'mirror')).toBe(true)
+  })
+})

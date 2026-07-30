@@ -403,3 +403,90 @@ static_resources:
     ).toBe('error')
   })
 })
+
+describe('references that are not routes', () => {
+  const withMirror = (mirror: string) => `
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config:
+            name: r
+            virtual_hosts:
+            - name: v
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/" }
+                route:
+                  cluster: primary
+                  request_mirror_policies:
+                  - cluster: ${mirror}
+  clusters:
+  - name: primary
+  - name: shadow
+`
+
+  test('a cluster reached only by a mirror policy is not called unreached', () => {
+    // The same shape `ext_authz` and `tcp_proxy` each had: a cluster this config sends every
+    // matching request a copy of, reported as one nothing reaches.
+    const codes = analyse(withMirror('shadow')).diagnostics.map((d) => d.code)
+    expect(codes).not.toContain('cluster-unused')
+  })
+
+  test('and a mirror naming a cluster that is not here is reported', () => {
+    const found = analyse(withMirror('ghost')).diagnostics.find(
+      (d) => d.code === 'cluster-not-found',
+    )
+    expect(found?.message).toContain('ghost')
+  })
+})
+
+describe('two listeners that cannot both start', () => {
+  test('`0.0.0.0` and an address left out are the same bind', () => {
+    // Both are the wildcard. Comparing the strings `0.0.0.0:80` and `*:80` said they were
+    // different and let a genuine bind conflict through.
+    const codes = analyse(`
+static_resources:
+  listeners:
+  - name: a
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+  - name: b
+    address: { socket_address: { port_value: 80 } }
+`).diagnostics.map((d) => d.code)
+    expect(codes).toContain('duplicate-listener-address')
+  })
+
+  test('an additional address conflicts like any other', () => {
+    const codes = analyse(`
+static_resources:
+  listeners:
+  - name: a
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+    additional_addresses:
+    - address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+  - name: b
+    address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+`).diagnostics.map((d) => d.code)
+    expect(codes).toContain('duplicate-listener-address')
+  })
+
+  test('a listener that never binds cannot conflict', () => {
+    // `bind_to_port: false` is a virtual listener, reached by another listener redirecting
+    // to it. Sharing a port with one is the entire point rather than a mistake.
+    const codes = analyse(`
+static_resources:
+  listeners:
+  - name: real
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+  - name: virtual
+    bind_to_port: false
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+`).diagnostics.map((d) => d.code)
+    expect(codes).not.toContain('duplicate-listener-address')
+  })
+})

@@ -442,10 +442,17 @@ export class Cursor {
     if (this.node === null || this.misshapen) return into
 
     if (this.wholesale || !this.touched) {
-      // Scalars are values, not structure. Reporting `stat_prefix: ingress_http` as an
-      // unrecognised field when what is unrecognised is the enclosing filter would bury
+      // An UNREAD scalar is a value, not structure. Reporting `stat_prefix: ingress_http` as
+      // an unrecognised field when what is unrecognised is the enclosing filter would bury
       // the useful finding under its own details.
-      if (isScalar(this.node)) return into
+      //
+      // An ACKNOWLEDGED one is the opposite case and is reported. The builder went and asked
+      // for it by name and then declined to judge it, which is exactly the claim the
+      // unvalidated list carries — and the alternative is worse than untidy: it is the one
+      // way a field can be read and then appear in neither list, which is how a header
+      // matcher's `ignore_case` came to be fetched, dropped on the floor, and counted
+      // nowhere while the route tester quietly failed to honour it.
+      if (isScalar(this.node) && !this.wholesale) return into
 
       // An acknowledged node with nothing in it has nothing to withhold judgement about.
       // `google_re2: {}` is why this is here: it is an empty marker message that has been a

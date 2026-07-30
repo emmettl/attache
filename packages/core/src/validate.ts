@@ -1,6 +1,6 @@
 import type { Diagnostic } from './diagnostics.js'
 import { formatPath } from './source.js'
-import type { ConfigModel, Route, RouteConfig, Sourced, VirtualHost } from './types.js'
+import type { ConfigModel, Listener, Route, RouteConfig, Sourced, VirtualHost } from './types.js'
 
 // The checks that need more than one part of the config at once.
 //
@@ -46,6 +46,14 @@ function clusterReferences(model: ConfigModel): { name: string; at: Sourced }[] 
         else if (route.action.kind === 'weightedClusters') {
           for (const weighted of route.action.clusters) out.push({ name: weighted.name, at: route })
         }
+        // Shadow traffic. The response is thrown away, so it decides nothing about where the
+        // request goes — but a copy of every matching request is sent, which makes it a
+        // reference like any other. Missing it produced both halves of the wrong answer at
+        // once: a mirror target that does not exist went unreported, and one that does was
+        // reported as a cluster nothing reaches.
+        for (const mirror of route.forwarding?.mirrorClusters ?? []) {
+          out.push({ name: mirror.cluster, at: mirror })
+        }
       }
     }
   }
@@ -64,7 +72,29 @@ function clusterReferences(model: ConfigModel): { name: string; at: Sourced }[] 
     }
   }
 
-  return out
+  // A `weighted_clusters` entry with no `name` reaches here as the empty string, and the
+  // finding it produced read "No cluster named ``" — which points at a real problem and
+  // names it in a way nobody can act on. The entry is already covered by the missing-field
+  // diagnostic on the entry itself, so it is dropped here rather than reported twice.
+  return out.filter((reference) => reference.name !== '')
+}
+
+/**
+ * Every address a listener binds, as the comparable string a bind conflict is decided on.
+ *
+ * `0.0.0.0` and an address left out are the same wildcard bind and were being compared as
+ * `0.0.0.0:80` against `*:80`, so two listeners that genuinely cannot both start came back
+ * clean. `additional_addresses` is here for the same reason: it is a bind like any other.
+ */
+function bindsOf(listener: Listener): string[] {
+  const wildcards = new Set(['0.0.0.0', '::', '[::]'])
+  return [listener.address, ...listener.additionalAddresses]
+    .map((address) => {
+      if (address?.portValue === undefined) return undefined
+      const host = address.address
+      return `${host === undefined || wildcards.has(host) ? '*' : host}:${address.portValue}`
+    })
+    .filter((bind): bind is string => bind !== undefined)
 }
 
 function duplicates<T>(items: T[], key: (item: T) => string | undefined): Map<string, T[]> {
@@ -210,10 +240,19 @@ export function validate(model: ConfigModel): Diagnostic[] {
     }
   }
 
-  for (const [where, group] of duplicates(model.listeners, (l) =>
-    l.address?.portValue === undefined ? undefined : `${l.address.address ?? '*'}:${l.address.portValue}`,
-  )) {
-    for (const listener of group.slice(1)) {
+  // A listener can bind more than one address, so the pairing is flattened before it is
+  // grouped: one entry per (listener, bind) rather than one per listener.
+  const binds = model.listeners.flatMap((listener) =>
+    // `bind_to_port: false` is a virtual listener — it never takes a socket, so it cannot
+    // conflict with anything, and saying it does would be a confident accusation about the
+    // one shape where sharing a port is the entire point.
+    listener.bindToPort === false
+      ? []
+      : bindsOf(listener).map((bind) => ({ listener, bind })),
+  )
+
+  for (const [where, group] of duplicates(binds, (entry) => entry.bind)) {
+    for (const { listener } of group.slice(1)) {
       out.push({
         severity: 'error',
         code: 'duplicate-listener-address',
