@@ -490,3 +490,140 @@ static_resources:
     expect(codes).not.toContain('duplicate-listener-address')
   })
 })
+
+describe('which routes are genuinely unreachable', () => {
+  const routes = (body: string) => `
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config:
+            name: r
+            virtual_hosts:
+            - name: v
+              domains: ["*"]
+              routes:
+${body}
+  clusters:
+  - name: a
+  - name: b
+`
+  const unreachable = (body: string) =>
+    analyse(routes(body)).diagnostics.filter((d) => d.code === 'route-unreachable')
+
+  test('a route that does not take every request shadows nothing', () => {
+    // The one that matters. A canary at fifty per cent sends half its traffic to the route
+    // underneath it BY DESIGN, so calling that dead config is a false accusation — and
+    // reading `runtime_fraction` without telling `shadows` about it is what created one.
+    expect(
+      unreachable(`              - name: canary
+                match:
+                  prefix: /
+                  runtime_fraction: { default_value: { numerator: 50, denominator: HUNDRED } }
+                route: { cluster: a }
+              - name: rest
+                match: { prefix: / }
+                route: { cluster: b }`),
+    ).toEqual([])
+  })
+
+  test('a `path_separated_prefix` above covers what sits under it', () => {
+    const found = unreachable(`              - name: api
+                match: { path_separated_prefix: /api }
+                route: { cluster: a }
+              - name: below
+                match: { prefix: /api/v1 }
+                route: { cluster: b }`)
+    expect(found).toHaveLength(1)
+    // Named as it was written: saying `prefix:` here would send somebody looking for a line
+    // that is not in their file.
+    expect(found[0]!.detail).toContain('`path_separated_prefix: /api`')
+  })
+
+  test('and does not cover a sibling that merely starts with the same letters', () => {
+    // `path_separated_prefix: /api` takes `/api` and `/api/...` and nothing else, so a
+    // plain `startsWith` would invent a shadow Envoy does not have.
+    expect(
+      unreachable(`              - name: api
+                match: { path_separated_prefix: /api }
+                route: { cluster: a }
+              - name: sibling
+                match: { prefix: /apifoo }
+                route: { cluster: b }`),
+    ).toEqual([])
+  })
+
+  test('the same exact path written twice', () => {
+    // An ordinary merge artefact, and the second one never runs.
+    expect(
+      unreachable(`              - name: first
+                match: { path: /healthz }
+                route: { cluster: a }
+              - name: second
+                match: { path: /healthz }
+                route: { cluster: b }`),
+    ).toHaveLength(1)
+  })
+
+  test('an exact path does not shadow a prefix that merely contains it', () => {
+    // `path: /api` takes exactly `/api`. `prefix: /api` takes far more, and remains
+    // reachable for everything else under it.
+    expect(
+      unreachable(`              - name: exact
+                match: { path: /api }
+                route: { cluster: a }
+              - name: under
+                match: { prefix: /api }
+                route: { cluster: b }`),
+    ).toEqual([])
+  })
+
+  test('a regex above claims nothing, because a string comparison cannot say', () => {
+    expect(
+      unreachable(`              - name: re
+                match: { safe_regex: { regex: "/.*" } }
+                route: { cluster: a }
+              - name: after
+                match: { prefix: /anything }
+                route: { cluster: b }`),
+    ).toEqual([])
+  })
+})
+
+test('one missing cluster named by three routes is three findings, at three lines', () => {
+  // Locked in as a decision rather than left as an accident. Deduplicating on the name
+  // would have to pick one of the three routes to point at, and the other two would look
+  // fine in the editor — so somebody fixes the line they were shown and ships the rest.
+  const found = analyse(`
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config:
+            name: r
+            virtual_hosts:
+            - name: v
+              domains: ["*"]
+              routes:
+              - match: { path: /1 }
+                route: { cluster: ghost }
+              - match: { path: /2 }
+                route: { cluster: ghost }
+              - match: { path: /3 }
+                route: { cluster: ghost }
+  clusters: []
+`).diagnostics.filter((d) => d.code === 'cluster-not-found')
+
+  expect(found).toHaveLength(3)
+  expect(new Set(found.map((d) => d.range.line)).size).toBe(3)
+})

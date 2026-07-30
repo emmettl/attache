@@ -769,3 +769,94 @@ static_resources:
   expect(ask8080.outcome).toBe('matched')
   expect(ask8080.listener?.name).toBe('dual')
 })
+
+describe('the order the connection manager rewrites a path in', () => {
+  const both = (settings: string) => `
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 80 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+${settings}
+          route_config:
+            name: r
+            virtual_hosts:
+            - name: v
+              domains: ["*"]
+              routes:
+              - name: kept
+                match: { path: /a/b }
+                route: { cluster: kept }
+              - name: eaten
+                match: { path: /b }
+                route: { cluster: eaten }
+  clusters:
+  - name: kept
+  - name: eaten
+`
+
+  test('`normalize_path` runs before `merge_slashes`, as Envoy does', () => {
+    // `maybeNormalizePath` calls canonicalPath and only then mergeSlashes. On `/a//../b`
+    // that resolves to `/a/b`, because the `..` cancels the empty segment the doubled slash
+    // made. The other way round the `..` eats `a` instead and the request lands on `/b` —
+    // a different route, named confidently, on any config that sets both.
+    const model = analyse(both('          normalize_path: true\n          merge_slashes: true')).model
+    const result = matchRequest(model, {
+      authority: 'x',
+      path: '/a//../b',
+      method: 'GET',
+      port: 80,
+      headers: {},
+    })
+    expect(result.cluster).toBe('kept')
+    expect(result.rewrites.join(' ')).toContain('`/a/b`')
+  })
+
+  test('and each is still applied on its own', () => {
+    const merged = analyse(both('          merge_slashes: true')).model
+    expect(
+      matchRequest(merged, { authority: 'x', path: '/a//b', method: 'GET', port: 80, headers: {} })
+        .cluster,
+    ).toBe('kept')
+
+    const normalised = analyse(both('          normalize_path: true')).model
+    expect(
+      matchRequest(normalised, { authority: 'x', path: '/a/c/../b', method: 'GET', port: 80, headers: {} })
+        .cluster,
+    ).toBe('kept')
+  })
+})
+
+test('an exact SNI beats a wildcard of any length', () => {
+  // The rank was a magic 1000 against wildcards scored by their own length, so a pattern
+  // longer than that outranked an exact name. Unreachable with real DNS, and now a fact
+  // about the code rather than about how long domains happen to be.
+  const tail = `${'a'.repeat(1200)}.com`
+  const model = analyse(`
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 443 } }
+    filter_chains:
+    - name: wildcard
+      filter_chain_match: { server_names: ["*.${tail}"] }
+      filters: []
+    - name: exact
+      filter_chain_match: { server_names: ["host.${tail}"] }
+      filters: []
+  clusters: []
+`).model
+  const result = matchRequest(model, {
+    authority: 'x',
+    path: '/',
+    method: 'GET',
+    port: 443,
+    serverName: `host.${tail}`,
+    headers: {},
+  })
+  expect(result.filterChain?.name).toBe('exact')
+})

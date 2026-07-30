@@ -268,3 +268,80 @@ describe('the arguments', () => {
     expect(parseArgs(['--width', '3']).error).toContain('--width')
   })
 })
+
+// What GitHub's ingestion actually insists on.
+//
+// Asserted field by field rather than against the published schema, which would mean an
+// `ajv` devDependency and a 200 kB document vendored into the repo to catch a shape this
+// file produces in forty lines. What follows is the intersection that matters: SARIF 2.1.0's
+// required properties, plus the ones code scanning rejects an upload without.
+describe('the SARIF conforms', () => {
+  const CONFIGS = [
+    TROUBLE,
+    CLEAN,
+    // An info-level finding, which is the one that maps to a level SARIF spells differently.
+    `static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 1 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          rds: { route_config_name: elsewhere }
+`,
+  ]
+
+  const LEVELS = new Set(['none', 'note', 'warning', 'error'])
+
+  test.each(CONFIGS.map((c, i) => [i, c]))('config %i', (_i, config) => {
+    const doc = JSON.parse(
+      render([check(config as string, 'sub/envoy.yaml')], options({ format: 'sarif' })),
+    )
+
+    expect(doc.version).toBe('2.1.0')
+    expect(Array.isArray(doc.runs)).toBe(true)
+
+    for (const run of doc.runs) {
+      // `tool.driver.name` is required by the spec and by the uploader.
+      expect(typeof run.tool.driver.name).toBe('string')
+      expect(run.tool.driver.name.length).toBeGreaterThan(0)
+
+      const declared = new Set(run.tool.driver.rules.map((r: { id: string }) => r.id))
+      for (const rule of run.tool.driver.rules) {
+        expect(typeof rule.id).toBe('string')
+        if ('helpUri' in rule) expect(rule.helpUri).toMatch(/^https:\/\//)
+      }
+
+      for (const result of run.results) {
+        // Every rule a result names has to be declared, or the alert has nothing to link to.
+        expect(declared.has(result.ruleId)).toBe(true)
+        expect(LEVELS.has(result.level)).toBe(true)
+        expect(typeof result.message.text).toBe('string')
+        expect(result.message.text.length).toBeGreaterThan(0)
+        expect(result.locations.length).toBeGreaterThan(0)
+
+        for (const location of result.locations) {
+          const { artifactLocation, region } = location.physicalLocation
+          // Relative, forward slashes, no leading `./` — otherwise the alert lands on no
+          // file in the repository.
+          expect(artifactLocation.uri).toBe('sub/envoy.yaml')
+          expect(artifactLocation.uri.startsWith('/')).toBe(false)
+          expect(artifactLocation.uri).not.toContain('\\')
+          // SARIF regions are 1-based, and a region that ends before it starts is rejected.
+          expect(region.startLine).toBeGreaterThanOrEqual(1)
+          expect(region.startColumn).toBeGreaterThanOrEqual(1)
+          expect(region.endLine).toBeGreaterThanOrEqual(region.startLine)
+        }
+      }
+    }
+  })
+
+  test('a clean config is a valid document with no results, not an empty one', () => {
+    const doc = JSON.parse(render([check(CLEAN)], options({ format: 'sarif' })))
+    expect(doc.runs[0].results).toEqual([])
+    expect(doc.runs[0].tool.driver.rules).toEqual([])
+    expect(doc.runs[0].tool.driver.name).toBe('Attaché')
+  })
+})

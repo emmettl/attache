@@ -123,13 +123,45 @@ function shadows(earlier: Route, later: Route): boolean {
   if (earlier.match.headers.length > 0 || earlier.match.queryParameters.length > 0) return false
   if (!earlier.match.caseSensitive || !later.match.caseSensitive) return false
 
+  // A criterion this package reads and does not evaluate means the earlier route does NOT
+  // take every request its path covers, and the route below it is reachable after all.
+  // `runtime_fraction` is the case that matters: a canary at fifty per cent sends half the
+  // traffic to the route underneath it BY DESIGN, and calling that dead config is exactly
+  // the false accusation this function's conservatism exists to avoid. Modelling those
+  // criteria without telling this is what introduced the accusation in the first place.
+  if (earlier.match.unevaluatedCriteria.length > 0 || earlier.match.hasUnmodelledCriteria) {
+    return false
+  }
+
   const first = earlier.match.pathSpec
   const second = later.match.pathSpec
-  if (first.kind !== 'prefix') return false
   if (second.kind !== 'prefix' && second.kind !== 'path' && second.kind !== 'pathSeparatedPrefix') {
     return false
   }
-  return second.value.startsWith(first.value)
+
+  switch (first.kind) {
+    case 'prefix':
+      // Everything at or below the prefix, as a plain string: `prefix: /api` really does
+      // take `/apifoo`, which is the whole reason people are surprised by it.
+      return second.value.startsWith(first.value)
+
+    case 'pathSeparatedPrefix':
+      // The same, restricted to segment boundaries. `path_separated_prefix: /api` takes
+      // `/api` and `/api/...` and nothing else — so it does NOT cover `/apifoo`, and a
+      // plain `startsWith` here would invent a shadow that Envoy does not have.
+      return second.value === first.value || second.value.startsWith(`${first.value}/`)
+
+    case 'path':
+      // An exact path covers exactly itself. Worth catching all the same: the same endpoint
+      // written twice is an ordinary merge artefact, and the second one never runs.
+      return second.kind === 'path' && second.value === first.value
+
+    default:
+      // A regex, a `connect_matcher`, or no path at all. What a regex covers is not a
+      // question a string comparison can answer, and guessing would be a confident claim
+      // about dead config.
+      return false
+  }
 }
 
 function checkVirtualHost(host: VirtualHost, into: Diagnostic[]): void {
@@ -137,13 +169,23 @@ function checkVirtualHost(host: VirtualHost, into: Diagnostic[]): void {
     for (let i = 0; i < index; i++) {
       const earlier = host.routes[i]!
       if (!shadows(earlier, route)) continue
+      // Named as it was written, now that three kinds of matcher can be the one covering
+      // this route. Saying `prefix:` about a `path_separated_prefix` would send somebody
+      // looking for a line that is not there.
+      const spec = earlier.match.pathSpec
       const covering =
-        earlier.match.pathSpec.kind === 'prefix' ? earlier.match.pathSpec.value : ''
+        spec.kind === 'prefix'
+          ? `prefix: ${spec.value}`
+          : spec.kind === 'pathSeparatedPrefix'
+            ? `path_separated_prefix: ${spec.value}`
+            : spec.kind === 'path'
+              ? `path: ${spec.value}`
+              : 'match'
       into.push({
         severity: 'warning',
         code: 'route-unreachable',
         message: `This route can never match: route ${i + 1} in \`${host.name ?? 'this virtual host'}\` already matches everything it would.`,
-        detail: `Routes are tried in the order they are written, and the first match wins — so the earlier \`prefix: ${covering}\` takes every request this one is for. Moving this route above it is usually what was meant.`,
+        detail: `Routes are tried in the order they are written, and the first match wins — so the earlier \`${covering}\` takes every request this one is for. Moving this route above it is usually what was meant.`,
         path: route.path,
         range: route.range,
       })
@@ -179,6 +221,20 @@ export function validate(model: ConfigModel): Diagnostic[] {
     model.format !== 'config-dump' && (model.bootstrap?.dynamicResources?.usesCds ?? false)
   const xds = model.bootstrap?.dynamicResources?.xdsCluster
 
+  /**
+   * One finding per REFERENCE, not per missing name — and that is a decision rather than an
+   * oversight.
+   *
+   * Three routes naming a cluster that is not here produce three findings, which reads like
+   * three copies of one typo. Deduplicating on the name would produce one, and it would have
+   * to point at one of the three routes: the editor would underline that route and leave the
+   * other two looking fine, and the person fixing it would repair the line they were shown
+   * and ship the other two.
+   *
+   * Each of those routes is independently broken and each needs its own edit unless the
+   * cluster arrives. So the count is not inflated — it is the number of places that have to
+   * change.
+   */
   for (const reference of referenced) {
     if (clusterNames.has(reference.name)) continue
     out.push({

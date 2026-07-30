@@ -49,7 +49,9 @@ about the winner.
 > connection manager that sets `merge_slashes` or `strip_matching_host_port` rewrites the
 > request before a single route is looked at, so the tester applies those first and says
 > which one it applied — `//api//v1` matching `prefix: /api/v1` is bewildering until you are
-> told the slashes were merged four fields above the route.
+> told the slashes were merged four fields above the route. In Envoy's order, which is
+> `normalize_path` and then `merge_slashes`: on `/a//../b` that is the difference between
+> `/a/b` and `/b`, and so between two different routes.
 
 > Ask the *Virtual host precedence* example for `www.foo.com`. Four virtual hosts match it.
 > Envoy takes the most specific, not the first written, and moving them around in the file
