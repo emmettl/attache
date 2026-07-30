@@ -326,3 +326,80 @@ static_resources:
 `),
   ).toContain('no-filter-chains')
 })
+
+describe('a cluster the file does not define', () => {
+  const withDynamic = (dynamic: string) => `
+${dynamic}
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config:
+            name: r
+            virtual_hosts:
+            - name: v
+              domains: ["*"]
+              routes: [{ match: { prefix: "/" }, route: { cluster: elsewhere } }]
+          http_filters:
+          - name: envoy.filters.http.router
+  clusters: []
+`
+
+  test('is an error when nothing says it could arrive later', () => {
+    const found = analyse(withDynamic('')).diagnostics.find((d) => d.code === 'cluster-not-found')
+    expect(found?.severity).toBe('error')
+  })
+
+  test('is not an error when the bootstrap fetches clusters over CDS', () => {
+    const found = analyse(
+      withDynamic(`dynamic_resources:
+  cds_config:
+    api_config_source:
+      api_type: GRPC
+      grpc_services:
+      - envoy_grpc: { cluster_name: xds_cluster }`),
+    ).diagnostics.find((d) => d.code === 'cluster-not-found')
+
+    // The old wording said "nothing in this config says so" about CDS delivery. Something
+    // does now, and keeping it at error severity would be the tool ignoring evidence in the
+    // same file using the word that means it is sure.
+    expect(found?.severity).toBe('info')
+    expect(found?.detail).toContain('xds_cluster')
+  })
+
+  test('is still an error in a config dump, which lists what Envoy actually holds', () => {
+    const dump = JSON.stringify({
+      configs: [
+        {
+          '@type': 'type.googleapis.com/envoy.admin.v3.BootstrapConfigDump',
+          bootstrap: { dynamic_resources: { cds_config: { ads: {} } } },
+        },
+        {
+          '@type': 'type.googleapis.com/envoy.admin.v3.RoutesConfigDump',
+          static_route_configs: [
+            {
+              route_config: {
+                name: 'r',
+                virtual_hosts: [
+                  {
+                    name: 'v',
+                    domains: ['*'],
+                    routes: [{ match: { prefix: '/' }, route: { cluster: 'elsewhere' } }],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(
+      analyse(dump).diagnostics.find((d) => d.code === 'cluster-not-found')?.severity,
+    ).toBe('error')
+  })
+})

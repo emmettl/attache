@@ -107,14 +107,34 @@ export function validate(model: ConfigModel): Diagnostic[] {
   )
   const referenced = clusterReferences(model)
 
+  /**
+   * Whether a cluster this file does not define could still turn up at runtime.
+   *
+   * The old wording of the finding below said "if this cluster is delivered over CDS rather
+   * than written here, that is expected — but nothing in this config says so", which was
+   * true right up until `dynamic_resources` was modelled. Now something does say so, and
+   * continuing to call it an error would be the tool ignoring evidence sitting in the same
+   * file at error severity, which is the word that means "I am sure".
+   *
+   * A `/config_dump` is the opposite case and stays an error: it lists every cluster the
+   * running Envoy actually holds, CDS-delivered ones included, so a name that resolves to
+   * nothing there really does resolve to nothing.
+   */
+  const clustersMayArriveLater =
+    model.format !== 'config-dump' && (model.bootstrap?.dynamicResources?.usesCds ?? false)
+  const xds = model.bootstrap?.dynamicResources?.xdsCluster
+
   for (const reference of referenced) {
     if (clusterNames.has(reference.name)) continue
     out.push({
-      severity: 'error',
+      severity: clustersMayArriveLater ? 'info' : 'error',
       code: 'cluster-not-found',
-      message: `No cluster named \`${reference.name}\`.`,
-      detail:
-        'Envoy rejects a config whose route names a cluster that is not defined. If this cluster is delivered over CDS rather than written here, that is expected — but nothing in this config says so.',
+      message: clustersMayArriveLater
+        ? `\`${reference.name}\` is not defined in this file, and this bootstrap takes its clusters from CDS.`
+        : `No cluster named \`${reference.name}\`.`,
+      detail: clustersMayArriveLater
+        ? `The definition is expected to arrive over CDS${xds === undefined ? '' : ` from \`${xds}\``}, so nothing here can check it — and nothing here can tell you it is really being served either. Paste a \`/config_dump\` from the running Envoy to see the clusters it actually holds.`
+        : 'Envoy rejects a config whose route names a cluster that is not defined. Nothing in this config says the cluster is delivered over CDS, so as written the reference goes nowhere.',
       path: reference.at.path,
       range: reference.at.range,
     })
