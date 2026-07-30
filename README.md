@@ -49,8 +49,9 @@ about the winner.
 ## What it does not do
 
 Attaché models the listener → filter chain → route → cluster spine, because that is what
-decides where a request goes. It does not model access loggers, tracing, circuit breakers,
-health checks, or most HTTP filters.
+decides where a request goes. It does not evaluate access loggers, tracing, circuit
+breakers, health checks, or any HTTP filter — those it reads far enough to name and no
+further.
 
 **It says so, every time.** Every field it did not check is counted next to the findings,
 split into the two things that can mean: *unrecognised*, outside the model altogether, and

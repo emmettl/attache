@@ -45,8 +45,10 @@ finding came from.
 ## The subset, and saying so
 
 This models the listener → filter chain → route → cluster spine — what decides where a
-request goes. It does not model access loggers, tracing, circuit breakers, health checks or
-most HTTP filters.
+request goes, down to a route's timeout, its retry policy, where its redirect points and
+which HTTP filters it turns off. It does not evaluate access loggers, tracing, circuit
+breakers, health checks or any filter's own configuration; those are read far enough to
+name and no further.
 
 `analyse` returns `unknowns` alongside `diagnostics`: every field it did not check, at the
 shallowest point it occurs. **Do not drop that array.** A checker covering a subset of

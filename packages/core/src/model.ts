@@ -3,23 +3,29 @@ import { cursorOver } from './cursor.js'
 import type { Diagnostic, Unknown } from './diagnostics.js'
 import type { ParseResult } from './parse.js'
 import type {
+  Bootstrap,
   Cluster,
   ConfigModel,
+  DynamicResources,
   Endpoint,
   FilterChain,
   FilterChainMatch,
   HeaderMatcher,
   HeaderMatchKind,
   HttpConnectionManager,
+  InternalAddressConfig,
   Listener,
   PathSpecifier,
+  PerFilterOverride,
   QueryMatcher,
   Route,
   RouteAction,
   RouteConfig,
+  RouteForwarding,
   RouteMatch,
   SocketAddress,
   TlsContext,
+  UpgradeConfig,
   VirtualHost,
   WeightedCluster,
 } from './types.js'
@@ -248,12 +254,96 @@ function routeAction(c: Cursor): RouteAction {
     return { kind: 'unmodelled', label: 'route' }
   }
 
-  if (c.field('redirect')) return { kind: 'redirect' }
+  const redirect = c.field('redirect')
+  if (redirect) {
+    return {
+      kind: 'redirect',
+      hostRedirect: redirect.strAt('hostRedirect'),
+      portRedirect: redirect.numAt('portRedirect'),
+      pathRedirect: redirect.strAt('pathRedirect'),
+      prefixRewrite: redirect.strAt('prefixRewrite'),
+      httpsRedirect: redirect.field('httpsRedirect')?.bool(),
+      schemeRedirect: redirect.strAt('schemeRedirect'),
+      responseCode: redirect
+        .field('responseCode')
+        ?.enumOf([
+          'MOVED_PERMANENTLY',
+          'FOUND',
+          'SEE_OTHER',
+          'TEMPORARY_REDIRECT',
+          'PERMANENT_REDIRECT',
+        ] as const),
+      stripQuery: redirect.field('stripQuery')?.bool(),
+    }
+  }
 
   const direct = c.field('directResponse')
-  if (direct) return { kind: 'directResponse', status: direct.numAt('status') }
+  if (direct) {
+    const body = direct.field('body')
+    return {
+      kind: 'directResponse',
+      status: direct.numAt('status'),
+      body: body && {
+        inline: body.strAt('inlineString'),
+        // Not opened, obviously — nothing here can see that machine's filesystem — but
+        // worth naming, because "it returns the contents of a file you have not looked at"
+        // is a different answer from "it returns nothing".
+        filename: body.strAt('filename'),
+      },
+    }
+  }
 
   return { kind: 'unmodelled', label: 'no action' }
+}
+
+/**
+ * The parts of a `route` action that are not about choosing an upstream.
+ *
+ * Fetched through `field('route')` a second time rather than threaded out of
+ * `routeAction`: the cursor caches its children, so the second call is the same object and
+ * costs a map lookup, and keeping the two readers separate means the action stays a clean
+ * discriminated union over what the route DOES rather than a bag with a timeout in it.
+ */
+function forwarding(c: Cursor): RouteForwarding | undefined {
+  const route = c.field('route')
+  if (!route) return undefined
+
+  const retry = route.field('retryPolicy')
+  return {
+    timeout: route.strAt('timeout'),
+    idleTimeout: route.strAt('idleTimeout'),
+    prefixRewrite: route.strAt('prefixRewrite'),
+    hostRewriteLiteral: route.strAt('hostRewriteLiteral'),
+    hasRetryPolicy: retry !== undefined,
+    retryOn: retry?.strAt('retryOn'),
+    numRetries: retry?.numAt('numRetries'),
+  }
+}
+
+/**
+ * Per-route HTTP filter overrides, by filter name.
+ *
+ * `typed_per_filter_config` is a proto map, so the keys are filter names rather than schema
+ * and `field()` has nothing to be handed — hence `fields()`, which exists for this. What is
+ * read is deliberately shallow: the `@type` and whether the override switches the filter
+ * off. Everything past that is the filter's own configuration, which this package does not
+ * evaluate for any filter and should not start evaluating here.
+ *
+ * The exception is an override that says nothing but `disabled`, which is by far the
+ * commonest shape in a real config. There is nothing left in it to withhold judgement
+ * about, so it is not acknowledged, and it drops out of the unchecked list entirely rather
+ * than padding it.
+ */
+function perFilterConfig(c: Cursor): PerFilterOverride[] {
+  const map = c.field('typedPerFilterConfig')
+  if (!map) return []
+
+  return map.fields().map(({ name, cursor }) => {
+    const type = cursor.strAt('@type')
+    const disabled = cursor.field('disabled')?.bool() ?? false
+    if (cursor.hasUnread()) cursor.acknowledge()
+    return { name, disabled, type }
+  })
 }
 
 function route(c: Cursor): Route {
@@ -263,6 +353,8 @@ function route(c: Cursor): Route {
     name: c.strAt('name'),
     match: match ? routeMatch(match) : { ...sourced(c), pathSpec: { kind: 'none' }, caseSensitive: true, headers: [], queryParameters: [] },
     action: routeAction(c),
+    forwarding: forwarding(c),
+    typedPerFilterConfig: perFilterConfig(c),
   }
 }
 
@@ -286,13 +378,46 @@ function routeConfig(c: Cursor): RouteConfig {
 
 // ---- listeners ------------------------------------------------------------------
 
+/**
+ * `internal_address_config`, as a pair of CIDR ranges and a flag.
+ *
+ * The ranges are flattened to `address/prefix` strings rather than kept as a pair of
+ * fields, because that is the notation the person who wrote them was thinking in and the
+ * only form anything downstream wants to display.
+ */
+function internalAddressConfig(c: Cursor): InternalAddressConfig {
+  return {
+    unixSockets: c.field('unixSockets')?.bool(),
+    cidrRanges: (c.field('cidrRanges')?.items() ?? [])
+      .map((range) => {
+        const address = range.strAt('addressPrefix')
+        if (address === undefined) return undefined
+        const length = range.numAt('prefixLen')
+        return length === undefined ? address : `${address}/${length}`
+      })
+      .filter((r): r is string => r !== undefined),
+  }
+}
+
 function httpConnectionManager(c: Cursor): HttpConnectionManager {
   const inline = c.field('routeConfig')
   const rds = c.field('rds')
 
+  // Envoy splits its HTTP settings across three blocks by which protocol they apply to, and
+  // the split is not one anybody remembers: `common_http_protocol_options` holds the ones
+  // that apply to all of them, `http_protocol_options` is HTTP/1 only despite the name
+  // reading like the general case, and `http2_protocol_options` is the other one. They are
+  // read here as three, and flattened where the model is read, because a caller asking
+  // "what is the idle timeout" should not have to know which box Envoy filed it in.
+  const common = c.field('commonHttpProtocolOptions')
+  const http1 = c.field('httpProtocolOptions')
+  const http2 = c.field('http2ProtocolOptions')
+  const internal = c.field('internalAddressConfig')
+
   return {
     ...sourced(c),
     statPrefix: c.strAt('statPrefix'),
+    codecType: c.field('codecType')?.enumOf(['AUTO', 'HTTP1', 'HTTP2', 'HTTP3'] as const),
     routeConfig: inline ? routeConfig(inline) : undefined,
     rdsRouteConfigName: rds?.strAt('routeConfigName'),
     httpFilters: (c.field('httpFilters')?.items() ?? [])
@@ -304,6 +429,48 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
         return f.strAt('name')
       })
       .filter((n): n is string => n !== undefined),
+    useRemoteAddress: c.field('useRemoteAddress')?.bool(),
+    addUserAgent: c.field('addUserAgent')?.bool(),
+    idleTimeout: common?.strAt('idleTimeout'),
+    headersWithUnderscoresAction: common
+      ?.field('headersWithUnderscoresAction')
+      ?.enumOf(['ALLOW', 'REJECT_REQUEST', 'DROP_HEADER'] as const),
+    streamIdleTimeout: c.strAt('streamIdleTimeout'),
+    requestTimeout: c.strAt('requestTimeout'),
+    serverHeaderTransformation: c
+      .field('serverHeaderTransformation')
+      ?.enumOf(['OVERWRITE', 'APPEND_IF_ABSENT', 'PASS_THROUGH'] as const),
+    http1: http1 && {
+      acceptHttp10: http1.field('acceptHttp10')?.bool(),
+      defaultHostForHttp10: http1.strAt('defaultHostForHttp10'),
+    },
+    http2: http2 && {
+      maxConcurrentStreams: http2.numAt('maxConcurrentStreams'),
+      allowConnect: http2.field('allowConnect')?.bool(),
+    },
+    internalAddress: internal && internalAddressConfig(internal),
+    accessLogNames: (c.field('accessLog')?.items() ?? [])
+      .map((log) => {
+        // The logger's own config says where the lines go and in what format, and its
+        // `filter` decides which requests produce one. Both are real configuration and
+        // neither is something this can check, so each is acknowledged rather than picked
+        // apart. The name is the useful half: "there is an access log here, and it is the
+        // file one" answers most of what anybody asks of it from a config alone.
+        log.field('typedConfig')?.acknowledge()
+        log.field('filter')?.acknowledge()
+        return log.strAt('name')
+      })
+      .filter((n): n is string => n !== undefined),
+    upgrades: (c.field('upgradeConfigs')?.items() ?? [])
+      .map((upgrade): UpgradeConfig | undefined => {
+        // An upgrade config can carry its own filter chain, run for upgraded streams only.
+        upgrade.field('filters')?.acknowledge()
+        const type = upgrade.strAt('upgradeType')
+        return type === undefined
+          ? undefined
+          : { type, enabled: upgrade.field('enabled')?.bool() }
+      })
+      .filter((u): u is UpgradeConfig => u !== undefined),
   }
 }
 
@@ -415,6 +582,19 @@ function listener(c: Cursor): Listener {
     ...sourced(c),
     name: c.strAt('name'),
     address: address ? socketAddress(address) : undefined,
+    trafficDirection: c
+      .field('trafficDirection')
+      ?.enumOf(['UNSPECIFIED', 'INBOUND', 'OUTBOUND'] as const),
+    perConnectionBufferLimitBytes: c.numAt('perConnectionBufferLimitBytes'),
+    listenerFilterNames: (c.field('listenerFilters')?.items() ?? [])
+      .map((f) => {
+        // A listener filter sniffs the first bytes of a connection to decide what it is.
+        // What it does with them is not modelled; that it is there is the part that changes
+        // how the chains below are selected.
+        f.field('typedConfig')?.acknowledge()
+        return f.strAt('name')
+      })
+      .filter((n): n is string => n !== undefined),
     filterChains: (c.field('filterChains')?.items() ?? []).map(filterChain),
     defaultFilterChain: fallback ? filterChain(fallback) : undefined,
   }
@@ -493,17 +673,114 @@ function cluster(c: Cursor): Cluster {
 
 // ---- assembling -----------------------------------------------------------------
 
+const API_TYPES = [
+  'DEPRECATED_AND_UNAVAILABLE_DO_NOT_USE',
+  'REST',
+  'GRPC',
+  'DELTA_GRPC',
+  'AGGREGATED_GRPC',
+  'AGGREGATED_DELTA_GRPC',
+] as const
+
+/**
+ * Which cluster an `ApiConfigSource` opens its stream to, if it says.
+ *
+ * Only the gRPC arm is followed. A REST config source is perfectly legal, names an HTTP
+ * cluster in a different field, and is rare enough that guessing at it would be modelling
+ * on speculation; its fields stay reported instead.
+ */
+function grpcClusterOf(api: Cursor | undefined): string | undefined {
+  if (!api) return undefined
+  api.field('apiType')?.enumOf(API_TYPES)
+  for (const service of api.field('grpcServices')?.items() ?? []) {
+    const name = service.field('envoyGrpc')?.strAt('clusterName')
+    if (name !== undefined) return name
+  }
+  return undefined
+}
+
+/**
+ * The same question of a `ConfigSource`, which wraps one.
+ *
+ * The distinction is easy to miss and cost me a pass: `lds_config` and `cds_config` are
+ * `ConfigSource`s and carry their `api_config_source` nested, while `ads_config` beside
+ * them IS an `ApiConfigSource` already. Reading all three the same way left the ADS block's
+ * `grpc_services` reported as a field nobody recognised, on the one config in the fixtures
+ * that has one.
+ */
+function configSourceCluster(source: Cursor | undefined): string | undefined {
+  // `ads: {}` is the marker meaning "use the aggregated stream", which is configured once
+  // under `ads_config` rather than here. An empty message, acknowledged so it does not
+  // arrive as a field nobody recognised.
+  source?.field('ads')?.acknowledge()
+  return grpcClusterOf(source?.field('apiConfigSource'))
+}
+
+function dynamicResources(c: Cursor): DynamicResources {
+  const lds = c.field('ldsConfig')
+  const cds = c.field('cdsConfig')
+
+  // All three are read before any of them is chosen from, and that is not a style
+  // preference. Reading through a cursor is what marks a field as understood, so a `??`
+  // chain over these calls stops reading as soon as one of them answers — and on the very
+  // config this was written for, where `ads_config` names the cluster, that left
+  // `cds_config` beside it reported as a field Attaché had never heard of.
+  //
+  // With ADS, which is how most meshes are wired, the per-resource sources are bare
+  // `ads: {}` markers and only `ads_config` carries a cluster name. With a split stream it
+  // is the other way round. So all three are asked and the first answer wins.
+  const named = [
+    grpcClusterOf(c.field('adsConfig')),
+    configSourceCluster(lds),
+    configSourceCluster(cds),
+  ]
+
+  return {
+    ...sourced(c),
+    usesLds: lds !== undefined,
+    usesCds: cds !== undefined,
+    xdsCluster: named.find((name) => name !== undefined),
+  }
+}
+
+/**
+ * The bootstrap's own top level, when the document has one.
+ *
+ * Returns undefined rather than an object full of undefineds when none of the three blocks
+ * is present, so that `model.bootstrap` reads as "this document said something about
+ * itself" rather than as a struct that is always there and usually empty.
+ */
+function bootstrapOf(root: Cursor): Bootstrap | undefined {
+  const node = root.field('node')
+  const admin = root.field('admin')
+  const dynamic = root.field('dynamicResources')
+  if (!node && !admin && !dynamic) return undefined
+
+  const adminAddress = admin?.field('address')
+
+  return {
+    node: node && { ...sourced(node), id: node.strAt('id'), cluster: node.strAt('cluster') },
+    admin: admin && {
+      ...sourced(admin),
+      address: adminAddress ? socketAddress(adminAddress) : undefined,
+    },
+    dynamicResources: dynamic && dynamicResources(dynamic),
+  }
+}
+
 /** A plain bootstrap: listeners and clusters live under `static_resources`. */
 function fromBootstrap(root: Cursor): {
   listeners: Cursor[]
   clusters: Cursor[]
   routeConfigs: Cursor[]
+  bootstrap?: Bootstrap
 } {
   const stat = root.field('staticResources')
   return {
     listeners: stat?.field('listeners')?.items() ?? [],
     clusters: stat?.field('clusters')?.items() ?? [],
     routeConfigs: [],
+    bootstrap: bootstrapOf(root),
   }
 }
 
@@ -520,10 +797,12 @@ function fromConfigDump(root: Cursor): {
   listeners: Cursor[]
   clusters: Cursor[]
   routeConfigs: Cursor[]
+  bootstrap?: Bootstrap
 } {
   const listeners: Cursor[] = []
   const clusters: Cursor[] = []
   const routeConfigs: Cursor[] = []
+  let bootstrap: Bootstrap | undefined
 
   for (const config of root.field('configs')?.items() ?? []) {
     const type = config.strAt('@type') ?? ''
@@ -552,11 +831,12 @@ function fromConfigDump(root: Cursor): {
         }
       }
     } else if (type.includes('BootstrapConfigDump')) {
-      const bootstrap = config.field('bootstrap')
-      if (bootstrap) {
-        const inner = fromBootstrap(bootstrap)
+      const dumped = config.field('bootstrap')
+      if (dumped) {
+        const inner = fromBootstrap(dumped)
         listeners.push(...inner.listeners)
         clusters.push(...inner.clusters)
+        bootstrap ??= inner.bootstrap
       }
     } else {
       // Scoped routes, secrets, endpoints — envelopes this package has no model for.
@@ -564,7 +844,7 @@ function fromConfigDump(root: Cursor): {
     }
   }
 
-  return { listeners, clusters, routeConfigs }
+  return { listeners, clusters, routeConfigs, bootstrap }
 }
 
 export function buildModel(parsed: ParseResult): ModelResult {
@@ -578,6 +858,7 @@ export function buildModel(parsed: ParseResult): ModelResult {
     listeners: raw.listeners.map(listener),
     clusters: raw.clusters.map(cluster),
     routeConfigs: raw.routeConfigs.map(routeConfig),
+    bootstrap: raw.bootstrap,
   }
 
   return { model, diagnostics, unknowns: root.collectUnknowns() }

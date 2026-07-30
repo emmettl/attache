@@ -33,6 +33,48 @@ export interface ConfigModel {
    * separately from the listeners that reference them by name.
    */
   routeConfigs: RouteConfig[]
+  /**
+   * The bootstrap's own top level — who this Envoy says it is, where its admin port is,
+   * and whether it expects to be told about listeners and clusters by somebody else.
+   *
+   * Absent when the document carried none of it, which includes most `/config_dump`s. The
+   * last of the three earns its place rather than merely reducing a count: a bootstrap that
+   * fetches clusters over CDS explains a route naming a cluster that is not written here,
+   * and `validate.ts` stops calling that an error once it can see the reason.
+   */
+  bootstrap?: Bootstrap
+}
+
+export interface Bootstrap {
+  node?: NodeIdentity
+  admin?: AdminInterface
+  dynamicResources?: DynamicResources
+}
+
+/** How this Envoy identifies itself to a management server. */
+export interface NodeIdentity extends Sourced {
+  id?: string
+  cluster?: string
+}
+
+export interface AdminInterface extends Sourced {
+  address?: SocketAddress
+}
+
+/**
+ * What arrives over xDS instead of being written in the file.
+ *
+ * Read for what it implies about the rest of the config rather than for its own sake: with
+ * CDS configured, a cluster the routes name and the file does not define is the ordinary
+ * shape of dynamic configuration rather than a dangling reference, and saying otherwise
+ * would be a confident accusation about a config this cannot see all of.
+ */
+export interface DynamicResources extends Sourced {
+  /** Listeners are delivered by LDS rather than written here. */
+  usesLds: boolean
+  usesCds: boolean
+  /** The cluster the xDS stream is opened to, when any of the sources names one. */
+  xdsCluster?: string
 }
 
 // ---- listeners ------------------------------------------------------------------
@@ -40,6 +82,21 @@ export interface ConfigModel {
 export interface Listener extends Sourced {
   name?: string
   address?: SocketAddress
+  /**
+   * INBOUND or OUTBOUND. A sidecar sets it and a front proxy usually does not, so it is
+   * often the quickest way to tell which kind of config you have been handed.
+   */
+  trafficDirection?: string
+  perConnectionBufferLimitBytes?: number
+  /**
+   * Listener filter names in order — the TLS inspector, the HTTP inspector, original_dst.
+   *
+   * Worth having by name even though their configuration is not modelled, because the TLS
+   * inspector is what makes SNI available to filter chain matching in the first place. A
+   * listener matching chains on `server_names` without one is a config whose chain
+   * selection will not do what it reads as doing.
+   */
+  listenerFilterNames: string[]
   filterChains: FilterChain[]
   /** Used when no `filterChains` entry matches. */
   defaultFilterChain?: FilterChain
@@ -105,11 +162,77 @@ export interface FilterChainMatch extends Sourced {
 
 export interface HttpConnectionManager extends Sourced {
   statPrefix?: string
+  /** AUTO, HTTP1, HTTP2, HTTP3 — what this listener will speak downstream. */
+  codecType?: string
   /** Routes defined inline. Mutually exclusive with `rdsRouteConfigName`. */
   routeConfig?: RouteConfig
   /** Routes fetched from a management server by this name. */
   rdsRouteConfigName?: string
   httpFilters: string[]
+  /**
+   * Whether the client's address is taken from the connection or from `x-forwarded-for`.
+   *
+   * Modelled because it decides what `x-forwarded-for` and `x-envoy-external-address` say
+   * to everything upstream, and because getting it wrong on an edge proxy is how a whole
+   * fleet ends up rate-limiting on the address of its own load balancer.
+   */
+  useRemoteAddress?: boolean
+  addUserAgent?: boolean
+  /**
+   * Timeouts as they were written — `300s`, `0s`. Not parsed into milliseconds: `0s` and
+   * absent mean different things to Envoy, and a number could not tell them apart.
+   */
+  idleTimeout?: string
+  streamIdleTimeout?: string
+  requestTimeout?: string
+  /** ALLOW, REJECT_REQUEST, DROP_HEADER — what happens to `x_underscored_headers`. */
+  headersWithUnderscoresAction?: string
+  /** OVERWRITE, APPEND_IF_ABSENT, PASS_THROUGH. */
+  serverHeaderTransformation?: string
+  http1?: Http1Options
+  http2?: Http2Options
+  internalAddress?: InternalAddressConfig
+  /** Access loggers by name. What each one writes, and where, is not modelled. */
+  accessLogNames: string[]
+  /** Protocol upgrades this listener will accept — `websocket`, `CONNECT`. */
+  upgrades: UpgradeConfig[]
+}
+
+/** `http_protocol_options`: how this listener treats HTTP/1 downstream. */
+export interface Http1Options {
+  /** Whether Envoy will serve HTTP/1.0 clients at all. Off by default. */
+  acceptHttp10?: boolean
+  /** The `Host` given to an HTTP/1.0 request that sent none — which is most of them. */
+  defaultHostForHttp10?: string
+}
+
+/** `http2_protocol_options`: the HTTP/2 settings worth reading back. */
+export interface Http2Options {
+  maxConcurrentStreams?: number
+  /** Extended CONNECT, which is how HTTP/2 carries WebSockets. */
+  allowConnect?: boolean
+}
+
+/**
+ * What counts as an internal request.
+ *
+ * This is not trivia: it decides whether Envoy will trust and forward the internal-only
+ * `x-envoy-*` headers, and it works together with `use_remote_address` to decide which hop
+ * in `x-forwarded-for` is treated as the client. A config that sets one without the other
+ * usually means something the person writing it did not intend.
+ */
+export interface InternalAddressConfig {
+  /** Whether unix domain sockets count as internal. */
+  unixSockets?: boolean
+  /** CIDR ranges treated as internal, as `address/prefix`. */
+  cidrRanges: string[]
+}
+
+export interface UpgradeConfig {
+  /** `websocket`, `CONNECT`, `spdy/3` — matched case-insensitively by Envoy. */
+  type: string
+  /** Envoy defaults this to true; a config that writes `false` is switching it off. */
+  enabled?: boolean
 }
 
 // ---- routes ---------------------------------------------------------------------
@@ -130,6 +253,56 @@ export interface Route extends Sourced {
   name?: string
   match: RouteMatch
   action: RouteAction
+  /**
+   * What the `route` action does to the request on its way upstream. Absent unless the
+   * route proxies at all — a redirect or a direct response never gets that far.
+   */
+  forwarding?: RouteForwarding
+  /**
+   * HTTP filters this route reconfigures or switches off, by name.
+   *
+   * Routing-adjacent enough to belong here rather than being left with the other
+   * unmodelled filter configuration. Turning `ext_authz` off for one route is how a health
+   * endpoint is kept out of the authorization path, and it is invisible from the route's
+   * match — so "why was this request not authorized" has no answer in the part of the
+   * config somebody would think to read.
+   */
+  typedPerFilterConfig: PerFilterOverride[]
+}
+
+/** Everything a `route` action does besides choosing the upstream. */
+export interface RouteForwarding {
+  /**
+   * As written — `15s`. Kept as text because `0s` disables the timeout entirely and is a
+   * deliberate thing to write, which a parsed number would render indistinguishable from a
+   * field somebody left out.
+   */
+  timeout?: string
+  idleTimeout?: string
+  /** The matched prefix is replaced with this before the request leaves. */
+  prefixRewrite?: string
+  /** The `Host` the upstream sees, when the route rewrites it. */
+  hostRewriteLiteral?: string
+  /** Whether a `retry_policy` is configured at all, which is most of what is worth saying. */
+  hasRetryPolicy: boolean
+  /** What it retries on — `5xx`, `reset,connect-failure`. */
+  retryOn?: string
+  numRetries?: number
+}
+
+export interface PerFilterOverride {
+  /** The filter being overridden — `envoy.filters.http.ext_authz`. */
+  name: string
+  /**
+   * Whether the override turns the filter off for this route.
+   *
+   * Both spellings put it in the same place: `FilterConfig` wraps a config it may be
+   * suppressing, and the per-filter messages like `ExtAuthzPerRoute` carry `disabled`
+   * directly, so one field read covers both.
+   */
+  disabled: boolean
+  /** The override's `@type`, when it declared one. */
+  type?: string
 }
 
 /** Envoy's `path_specifier` oneof, plus the secondary criteria. */
@@ -156,10 +329,49 @@ export type RouteAction =
   | { kind: 'weightedClusters'; clusters: WeightedCluster[] }
   /** The upstream is chosen at request time from a header, so it cannot be checked here. */
   | { kind: 'clusterHeader'; header: string }
-  | { kind: 'redirect' }
-  | { kind: 'directResponse'; status?: number }
+  | ({ kind: 'redirect' } & RedirectAction)
+  | { kind: 'directResponse'; status?: number; body?: ResponseBody }
   /** An action this package does not model, or none at all. */
   | { kind: 'unmodelled'; label: string }
+
+/**
+ * Where a redirect sends the request.
+ *
+ * Every part of this is optional and Envoy fills in whatever the config does not name from
+ * the request itself, which is what makes a redirect route so easy to misread: `redirect:
+ * { https_redirect: true }` is a complete, working rule and looks from a distance like an
+ * empty block. Modelled in full for exactly that reason — the tester used to say a route
+ * "redirects rather than proxying" and stop, which is the least useful true sentence
+ * available about it.
+ */
+export interface RedirectAction {
+  /** The `Location` host. Absent means the request's own authority. */
+  hostRedirect?: string
+  portRedirect?: number
+  /** Replaces the whole path. Mutually exclusive with `prefixRewrite`. */
+  pathRedirect?: string
+  /** Replaces the part of the path that the route matched on. */
+  prefixRewrite?: string
+  /** `https_redirect: true` is shorthand for `scheme_redirect: https`. */
+  httpsRedirect?: boolean
+  schemeRedirect?: string
+  /** MOVED_PERMANENTLY, FOUND, SEE_OTHER, TEMPORARY_REDIRECT, PERMANENT_REDIRECT. */
+  responseCode?: string
+  stripQuery?: boolean
+}
+
+/**
+ * An Envoy `DataSource`, as far as it can honestly be shown.
+ *
+ * `inline_string` is the one worth reading back: a direct response body is usually a short
+ * JSON error or a health check's "OK", and showing it answers "what does this route
+ * actually return" in one line. A filename is a path on a machine this cannot see and
+ * `inline_bytes` is base64 nobody wants on screen, so both are named rather than opened.
+ */
+export interface ResponseBody {
+  inline?: string
+  filename?: string
+}
 
 export interface WeightedCluster {
   name: string

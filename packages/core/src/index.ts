@@ -56,7 +56,7 @@ export interface Analysis {
   model: ConfigModel
   /** Syntax errors, structural problems and referential problems, in that order. */
   diagnostics: Diagnostic[]
-  /** Fields this package does not model, and therefore did not check. */
+  /** Fields this package did not check, each saying which of the two reasons applies. */
   unknowns: Unknown[]
   /** One line, and never a claim of validity. See `summarise`. */
   summary: string

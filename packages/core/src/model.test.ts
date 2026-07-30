@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { CAMEL_CASE, CONFIG_DUMP, FRONT_PROXY } from './fixtures.js'
+import { CAMEL_CASE, CONFIG_DUMP, FRONT_PROXY, PRODUCTION } from './fixtures.js'
 import { analyse } from './index.js'
 import { formatPath } from './source.js'
 
@@ -195,6 +195,127 @@ static_resources:
     expect(summary).toMatch(/1 field unrecognised · 1 read but not checked/)
     // Still no success state anywhere in it, however the counts fall.
     expect(summary).not.toMatch(/valid|✓|ok\b/i)
+  })
+})
+
+describe('a config that has been in production', () => {
+  const { model, unknowns, summary } = analyse(PRODUCTION)
+  const listener = model.listeners[0]!
+  const hcm = listener.filterChains[0]!.hcm!
+  const routes = hcm.routeConfig!.virtualHosts[0]!.routes
+
+  test('reads the listener beyond its address', () => {
+    expect(listener.trafficDirection).toBe('INBOUND')
+    expect(listener.perConnectionBufferLimitBytes).toBe(32768)
+    expect(listener.listenerFilterNames).toEqual(['envoy.filters.listener.tls_inspector'])
+  })
+
+  test('reads how the connection manager treats HTTP', () => {
+    expect(hcm.codecType).toBe('AUTO')
+    expect(hcm.useRemoteAddress).toBe(false)
+    expect(hcm.addUserAgent).toBe(true)
+    expect(hcm.serverHeaderTransformation).toBe('PASS_THROUGH')
+    expect(hcm.streamIdleTimeout).toBe('300s')
+    // `0s` is a request timeout switched off, which is why these stay as text: a parsed
+    // number could not tell it apart from a field nobody wrote.
+    expect(hcm.requestTimeout).toBe('0s')
+    expect(hcm.idleTimeout).toBe('3600s')
+    expect(hcm.headersWithUnderscoresAction).toBe('REJECT_REQUEST')
+  })
+
+  test('keeps the three protocol option blocks apart', () => {
+    expect(hcm.http1).toEqual({ acceptHttp10: true, defaultHostForHttp10: 'legacy.internal' })
+    expect(hcm.http2).toEqual({ maxConcurrentStreams: 100, allowConnect: true })
+    expect(hcm.internalAddress).toEqual({ unixSockets: true, cidrRanges: ['10.0.0.0/8'] })
+  })
+
+  test('names the access loggers and the upgrades without reading their innards', () => {
+    expect(hcm.accessLogNames).toEqual(['envoy.access_loggers.file'])
+    expect(hcm.upgrades).toEqual([
+      { type: 'websocket', enabled: undefined },
+      { type: 'CONNECT', enabled: false },
+    ])
+  })
+
+  test('says where a redirect goes, not merely that it is one', () => {
+    expect(routes[1]!.action).toEqual({
+      kind: 'redirect',
+      hostRedirect: 'api.example.com',
+      portRedirect: undefined,
+      pathRedirect: undefined,
+      prefixRewrite: '/v2',
+      httpsRedirect: true,
+      schemeRedirect: undefined,
+      responseCode: 'TEMPORARY_REDIRECT',
+      stripQuery: undefined,
+    })
+  })
+
+  test('reads what a proxying route does on the way upstream', () => {
+    expect(routes[2]!.forwarding).toEqual({
+      timeout: '15s',
+      idleTimeout: undefined,
+      prefixRewrite: '/',
+      hostRewriteLiteral: 'api.internal',
+      hasRetryPolicy: true,
+      retryOn: '5xx,reset',
+      numRetries: 3,
+    })
+    // A route that does not proxy never gets that far, so there is nothing to report.
+    expect(routes[0]!.forwarding).toBeUndefined()
+  })
+
+  test('reads a direct response body', () => {
+    expect(routes[0]!.action).toMatchObject({
+      kind: 'directResponse',
+      status: 200,
+      body: { inline: 'OK' },
+    })
+  })
+
+  test('records which filters a route switches off', () => {
+    expect(routes[0]!.typedPerFilterConfig).toEqual([
+      {
+        name: 'envoy.filters.http.ext_authz',
+        disabled: true,
+        type: 'type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute',
+      },
+    ])
+    expect(routes[2]!.typedPerFilterConfig).toEqual([])
+  })
+
+  test('reads the bootstrap top level', () => {
+    expect(model.bootstrap?.node).toMatchObject({ id: 'sidecar~10.0.1.7~api-7f9c', cluster: 'api' })
+    expect(model.bootstrap?.admin?.address).toMatchObject({
+      address: '127.0.0.1',
+      portValue: 15000,
+    })
+    expect(model.bootstrap?.dynamicResources).toMatchObject({
+      usesLds: false,
+      usesCds: true,
+      // Named on `ads_config`, which is an ApiConfigSource, while `cds_config` beside it is
+      // a ConfigSource wrapping one. Reading both the same way misses this.
+      xdsCluster: 'xds_cluster',
+    })
+  })
+
+  test('has nothing left it cannot name', () => {
+    expect(unknowns.filter((u) => u.kind === 'unrecognised')).toEqual([])
+    // What remains is every place it stopped on purpose: two filters' configs, a listener
+    // filter's, an access logger's, and the four blocks on the cluster it reads for presence.
+    expect(unknowns.map((u) => u.key)).toEqual([
+      'typed_config',
+      'typed_config',
+      'typed_config',
+      'typed_config',
+      'eds_cluster_config',
+      'health_checks',
+      'circuit_breakers',
+      'outlier_detection',
+      'typed_extension_protocol_options',
+    ])
+    expect(summary).toContain('9 fields read but not checked')
+    expect(summary).not.toMatch(/valid|✓/i)
   })
 })
 
