@@ -35,6 +35,12 @@ const DEFAULT_REQUEST: RequestForm = {
   headers: '',
 }
 
+/** A block of the source, 1-based and inclusive, as the core reports ranges. */
+export interface LineRange {
+  startLine: number
+  endLine: number
+}
+
 interface State {
   text: string
   analysis: Analysis
@@ -49,7 +55,19 @@ interface State {
    * "show me which part this is" — and a hover that stole the scroll position would make
    * the graph unusable, since crossing it would drag the source pane around.
    */
-  highlight: { startLine: number; endLine: number } | null
+  highlight: LineRange | null
+  /**
+   * Blocks of the source to grey out, while something elsewhere is filtering.
+   *
+   * A list rather than a single range, and unmerged: overlap and nesting are resolved by
+   * whatever draws it, because "which lines are covered" is a question about a document
+   * that this store does not have in front of it.
+   *
+   * Kept separate from `highlight` because they are opposite operations — one says "this
+   * part" and the other says "not these parts" — and they have to be able to coexist, so a
+   * block banded by a hover still reads as banded when it sits inside a masked region.
+   */
+  mask: LineRange[] | null
   request: RequestForm
   match: MatchResult | null
   shareLink: string | null
@@ -57,7 +75,8 @@ interface State {
   setText: (text: string) => void
   setTab: (tab: Tab) => void
   revealLine: (line: number) => void
-  setHighlight: (block: { startLine: number; endLine: number } | null) => void
+  setHighlight: (block: LineRange | null) => void
+  setMask: (blocks: LineRange[] | null) => void
   setRequest: (patch: Partial<RequestForm>) => void
   runMatch: () => void
   share: (text: string) => Promise<void>
@@ -119,6 +138,7 @@ export const useStore = create<State>((set, get) => ({
   tab: 'findings',
   reveal: null,
   highlight: null,
+  mask: null,
   request: DEFAULT_REQUEST,
   match: null,
   shareLink: null,
@@ -127,8 +147,11 @@ export const useStore = create<State>((set, get) => ({
     autosave(text)
     // A new config invalidates the old answer rather than leaving it there looking current.
     // The highlight goes too: it is a line range into text that no longer exists, and a
-    // band left hanging over unrelated lines is worse than no band.
-    set({ ...load(text), match: null, shareLink: null, highlight: null })
+    // band left hanging over unrelated lines is worse than no band. The mask goes for the
+    // same reason and more urgently — stale ranges there would grey out arbitrary parts of
+    // the new config, which reads as "Attaché has decided this does not matter" about lines
+    // it has never looked at. Whatever is filtering will recompute and set it again.
+    set({ ...load(text), match: null, shareLink: null, highlight: null, mask: null })
   },
 
   setTab(tab) {
@@ -142,6 +165,10 @@ export const useStore = create<State>((set, get) => ({
 
   setHighlight(block) {
     set({ highlight: block })
+  },
+
+  setMask(blocks) {
+    set({ mask: blocks })
   },
 
   setRequest(patch) {
