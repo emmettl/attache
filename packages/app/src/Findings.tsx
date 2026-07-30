@@ -1,5 +1,5 @@
 import { docsForCode, formatPath, type Severity, type Unknown } from '@attache/core'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from './store.js'
 
 // What the tool has to say, and what it has declined to say — side by side, on purpose.
@@ -23,9 +23,13 @@ export function Findings() {
   const unknowns = useStore((s) => s.analysis.unknowns)
   const revealLine = useStore((s) => s.revealLine)
   const setHighlight = useStore((s) => s.setHighlight)
+  const focus = useStore((s) => s.focus)
 
   const [hidden, setHidden] = useState<Set<Severity>>(new Set())
   const [query, setQuery] = useState('')
+  /** Which finding the editor just asked for, and which firing of the ask this is. */
+  const [flash, setFlash] = useState<{ index: number; nonce: number } | null>(null)
+  const items = useRef(new Map<number, HTMLLIElement>())
 
   const counts = useMemo(() => {
     const out: Record<Severity, number> = { error: 0, warning: 0, info: 0 }
@@ -33,9 +37,12 @@ export function Findings() {
     return out
   }, [diagnostics])
 
+  // Paired with the index into the UNFILTERED list, so a finding keeps the same identity
+  // whatever the filter is doing. Without that, focusing one would mean finding it twice —
+  // once to know it exists and once to know where the filter has put it.
   const shown = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    return diagnostics.filter((d) => {
+    return diagnostics.map((d, index) => ({ d, index })).filter(({ d }) => {
       if (hidden.has(d.severity)) return false
       if (needle === '') return true
       // The code and the path are searchable as well as the prose, so "cluster-not-found"
@@ -59,6 +66,32 @@ export function Findings() {
     })
 
   const filtering = hidden.size > 0 || query.trim() !== ''
+
+  /**
+   * The editor asked for the finding on a line. Clear whatever is hiding it, then flash it.
+   *
+   * The filter gives way, and that is the deliberate part. Somebody who clicks a marker in
+   * the gutter has named one specific finding; leaving it hidden behind a search box they
+   * typed into five minutes ago would make the marker look broken, and "it did nothing" is
+   * a worse outcome than "it showed you what you asked for and dropped a filter to do it".
+   */
+  useEffect(() => {
+    if (!focus) return
+    const index = diagnostics.findIndex((d) => d.range.line === focus.line)
+    if (index === -1) return
+    setHidden(new Set())
+    setQuery('')
+    setFlash({ index, nonce: focus.nonce })
+  }, [focus, diagnostics])
+
+  // Separate from the effect above because the scroll has to happen AFTER the filter reset
+  // has re-rendered — until then the element may not be in the list to scroll to.
+  useEffect(() => {
+    if (!flash) return
+    items.current.get(flash.index)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    const timer = setTimeout(() => setFlash(null), 1400)
+    return () => clearTimeout(timer)
+  }, [flash])
 
   const unrecognised = useMemo(() => unknowns.filter((u) => u.kind === 'unrecognised'), [unknowns])
   const unvalidated = useMemo(() => unknowns.filter((u) => u.kind === 'unvalidated'), [unknowns])
@@ -100,12 +133,16 @@ export function Findings() {
         <p className="muted">{diagnostics.length} findings, none matching this filter.</p>
       ) : (
         <ul className="findings">
-          {shown.map((d, i) => {
+          {shown.map(({ d, index }) => {
             const docs = docsForCode(d.code)
             return (
               <li
-                key={i}
-                className={`finding ${d.severity}`}
+                key={index}
+                ref={(node) => {
+                  if (node) items.current.set(index, node)
+                  else items.current.delete(index)
+                }}
+                className={`finding ${d.severity}${flash?.index === index ? ' flash' : ''}`}
                 onMouseEnter={() =>
                   setHighlight({ startLine: d.range.line, endLine: d.range.endLine })
                 }
