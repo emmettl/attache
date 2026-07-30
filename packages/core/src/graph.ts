@@ -1,5 +1,5 @@
 import type { ConfigPath, Range } from './source.js'
-import type { ConfigModel } from './types.js'
+import type { ConfigModel, Route } from './types.js'
 
 // The config as a shape rather than as an outline.
 //
@@ -47,6 +47,15 @@ export interface Graph {
   edges: GraphEdge[]
 }
 
+/**
+ * A filter name with its namespace dropped — `envoy.filters.http.ext_authz` → `ext_authz`.
+ *
+ * Only for the graph, where a node is under two hundred pixels wide and the prefix is the
+ * same on every filter anybody writes, so it costs the whole label to say nothing. The full
+ * name is a click away in the source pane, and everywhere that has room keeps it.
+ */
+const shortFilterName = (name: string): string => name.split('.').pop() ?? name
+
 const describeMatch = (
   spec: { kind: string; value?: string; label?: string },
 ): string => {
@@ -64,6 +73,30 @@ const describeMatch = (
     default:
       return spec.label ?? 'unmodelled'
   }
+}
+
+/**
+ * A route's second line: what it matches on, then what it does that the edges cannot show.
+ *
+ * A route with a cluster needs nothing here, because the edge leaving it says where it goes.
+ * A redirect or a direct response has no edge at all and would otherwise sit in the graph
+ * as a dead end with no explanation, and a route that switches a filter off looks exactly
+ * like one that does not.
+ */
+function describeRoute(route: Route): string {
+  const bits = [describeMatch(route.match.pathSpec)]
+
+  if (route.action.kind === 'redirect') {
+    const to = route.action.hostRedirect ?? route.action.pathRedirect
+    bits.push(to === undefined ? 'redirect' : `redirect → ${to}`)
+  } else if (route.action.kind === 'directResponse') {
+    bits.push(`direct ${route.action.status ?? 'response'}`)
+  }
+
+  const off = route.typedPerFilterConfig.filter((f) => f.disabled)
+  if (off.length > 0) bits.push(`disables ${off.map((f) => shortFilterName(f.name)).join(', ')}`)
+
+  return bits.join(' · ')
 }
 
 export function buildGraph(model: ConfigModel): Graph {
@@ -148,7 +181,7 @@ export function buildGraph(model: ConfigModel): Graph {
           id: routeId,
           kind: 'route',
           label: route.name ?? `route ${routeIndex + 1}`,
-          detail: describeMatch(route.match.pathSpec),
+          detail: describeRoute(route),
           path: route.path,
           range: route.range,
         })
@@ -180,10 +213,20 @@ export function buildGraph(model: ConfigModel): Graph {
       id: listenerId,
       kind: 'listener',
       label: listener.name ?? `(listener ${listenerIndex + 1})`,
+      // Direction earns the space: a sidecar's inbound and outbound listeners are otherwise
+      // told apart only by remembering which port is which, and a config full of them is
+      // exactly the config somebody opened this to make sense of.
       detail:
-        listener.address === undefined
-          ? undefined
-          : `${listener.address.address ?? '*'}:${listener.address.portValue ?? '?'}`,
+        [
+          listener.address === undefined
+            ? undefined
+            : `${listener.address.address ?? '*'}:${listener.address.portValue ?? '?'}`,
+          listener.trafficDirection === undefined || listener.trafficDirection === 'UNSPECIFIED'
+            ? undefined
+            : listener.trafficDirection.toLowerCase(),
+        ]
+          .filter((part): part is string => part !== undefined)
+          .join(' · ') || undefined,
       path: listener.path,
       range: listener.range,
     })

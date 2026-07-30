@@ -3,6 +3,7 @@ import type {
   FilterChain,
   Listener,
   Route,
+  RouteAction,
   RouteConfig,
   VirtualHost,
 } from './types.js'
@@ -55,7 +56,10 @@ export type DomainPrecedence = 'exact' | 'suffix-wildcard' | 'prefix-wildcard' |
 
 export interface MatchResult {
   outcome: Outcome
-  /** One sentence saying what happened. */
+  /**
+   * What happened, in a sentence — occasionally two, when the winning route also turns an
+   * HTTP filter off, which is worth a clause of its own rather than a subordinate one.
+   */
   explanation: string
   /**
    * Where this answer may differ from Envoy's, and why. Empty when nothing was skipped.
@@ -631,7 +635,7 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
       routeIndex: index,
       routeAttempts,
       cluster,
-      explanation: describe(route, index, winner.host, cluster),
+      explanation: describe(route, index, winner.host, request, cluster),
     }
   }
 
@@ -646,19 +650,122 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
   }
 }
 
-function describe(route: Route, index: number, host: VirtualHost, cluster?: string): string {
+/** Envoy's `RedirectResponseCode` names, as the status numbers people think in. */
+const REDIRECT_CODES: Record<string, number> = {
+  MOVED_PERMANENTLY: 301,
+  FOUND: 302,
+  SEE_OTHER: 303,
+  TEMPORARY_REDIRECT: 307,
+  PERMANENT_REDIRECT: 308,
+}
+
+/**
+ * Where a redirect actually sends this request.
+ *
+ * The tester used to say a route "redirects rather than proxying" and stop, which is the
+ * least useful true sentence available about it: somebody who has just tested a request
+ * against a redirect route wants the `Location` it would get back, and every part of that is
+ * sitting in the config beside the part that was already being read.
+ *
+ * Envoy fills in whatever the redirect does not name from the request itself, so this does
+ * too — the host, the path and the scheme are the incoming ones unless overridden. That
+ * makes the answer specific to the request being tested rather than a restatement of the
+ * config, which is the whole difference between this tester and reading the YAML.
+ */
+function redirectTarget(
+  action: Extract<RouteAction, { kind: 'redirect' }>,
+  route: Route,
+  request: TestRequest,
+): string {
+  const scheme =
+    action.schemeRedirect ?? (action.httpsRedirect === true ? 'https' : undefined)
+
+  const host = action.hostRedirect ?? request.authority
+  const port = action.portRedirect === undefined ? '' : `:${action.portRedirect}`
+
+  const spec = route.match.pathSpec
+  const incoming = action.stripQuery === true ? pathOnly(request.path) : request.path
+  const path =
+    action.pathRedirect ??
+    // `prefix_rewrite` on a redirect replaces the part of the path the route matched, which
+    // means the answer depends on the matcher as well as the action. Only a prefix match has
+    // a well-defined "part that matched" to swap out; for anything else the honest thing is
+    // to leave the path alone rather than guess at what Envoy would splice.
+    (action.prefixRewrite !== undefined && spec.kind === 'prefix'
+      ? `${action.prefixRewrite}${incoming.slice(spec.value.length)}`
+      : incoming)
+
+  return `${scheme === undefined ? '' : `${scheme}://`}${host}${port}${path}`
+}
+
+/**
+ * What a route's per-filter overrides do, as a sentence, or nothing when it has none.
+ *
+ * Switching `ext_authz` off for one route is how a health endpoint is kept out of the
+ * authorization path, and it leaves no trace in the route's match — so somebody asking why
+ * a request sailed past the authorization filter has no way to see it in the part of the
+ * config they would think to read. That makes it routing-adjacent enough to belong in the
+ * answer rather than in the list of things this package did not look at.
+ */
+function overrides(route: Route): string {
+  const names = (subset: typeof route.typedPerFilterConfig) =>
+    subset.map((f) => `\`${f.name}\``).join(', ')
+
+  const off = route.typedPerFilterConfig.filter((f) => f.disabled)
+  const changed = route.typedPerFilterConfig.filter((f) => !f.disabled)
+
+  const clauses: string[] = []
+  if (off.length > 0) clauses.push(`disables ${names(off)}`)
+  if (changed.length > 0) clauses.push(`overrides the configuration of ${names(changed)}`)
+
+  return clauses.length === 0 ? '' : ` This route ${clauses.join(', and ')}.`
+}
+
+function describe(
+  route: Route,
+  index: number,
+  host: VirtualHost,
+  request: TestRequest,
+  cluster?: string,
+): string {
   const where = `route ${index + 1}${route.name ? ` (\`${route.name}\`)` : ''} of \`${host.name ?? 'the matching virtual host'}\``
+  const also = overrides(route)
+
   switch (route.action.kind) {
     case 'cluster':
     case 'weightedClusters':
-      return `Matched ${where} → cluster \`${cluster}\`.`
+      return `Matched ${where} → cluster \`${cluster}\`.${also}`
     case 'clusterHeader':
-      return `Matched ${where}, which picks its cluster from the \`${route.action.header}\` header.`
-    case 'redirect':
-      return `Matched ${where}, which redirects rather than proxying.`
-    case 'directResponse':
-      return `Matched ${where}, which answers directly with ${route.action.status ?? 'a fixed status'}.`
+      return `Matched ${where}, which picks its cluster from the \`${route.action.header}\` header.${also}`
+    case 'redirect': {
+      const code = route.action.responseCode
+      const status = code === undefined ? '' : ` with ${REDIRECT_CODES[code] ?? code}`
+      return `Matched ${where}, which redirects to \`${redirectTarget(route.action, route, request)}\`${status}.${also}`
+    }
+    case 'directResponse': {
+      const body = route.action.body
+      const returning =
+        body?.inline !== undefined
+          ? ` and the body \`${abbreviate(body.inline)}\``
+          : body?.filename !== undefined
+            ? ` and the contents of \`${body.filename}\``
+            : ''
+      return `Matched ${where}, which answers directly with ${route.action.status ?? 'a fixed status'}${returning}.${also}`
+    }
     case 'unmodelled':
-      return `Matched ${where}, whose action this tester does not model.`
+      return `Matched ${where}, whose action this tester does not model.${also}`
   }
+}
+
+/**
+ * A direct response body, shortened to fit in a sentence.
+ *
+ * Most of them are a line of JSON or the word "OK", and showing those in full is the point.
+ * The ones that are not are usually a whole HTML error page, and a verdict line is not where
+ * anybody wants to read one — so it is cut, and cut visibly, rather than being allowed to
+ * push the rest of the sentence off screen.
+ */
+function abbreviate(body: string): string {
+  const flat = body.replace(/\s+/g, ' ').trim()
+  return flat.length <= 60 ? flat : `${flat.slice(0, 57)}…`
 }

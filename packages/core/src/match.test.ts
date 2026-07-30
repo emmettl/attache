@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { FRONT_PROXY } from './fixtures.js'
+import { FRONT_PROXY, PRODUCTION } from './fixtures.js'
 import { analyse } from './index.js'
 import { matchRequest, type TestRequest } from './match.js'
 import type { ConfigModel } from './types.js'
@@ -386,5 +386,71 @@ static_resources:
   - name: internal
 `).model
     expect(ask(model, {}).caveats.join(' ')).toContain('does not evaluate')
+  })
+})
+
+describe('what the winning route does besides choosing a cluster', () => {
+  const { model } = analyse(PRODUCTION)
+
+  test('a redirect says where it sends the request', () => {
+    const result = matchRequest(model, {
+      authority: 'api.example.com',
+      path: '/v1/users?page=2',
+      method: 'GET',
+      port: 15006,
+      headers: {},
+    })
+    // Host and path from the config, the rest of the path from the request, and the scheme
+    // from `https_redirect`. "Redirects rather than proxying" was true and told nobody
+    // anything.
+    expect(result.explanation).toContain('https://api.example.com/v2/users?page=2')
+    expect(result.explanation).toContain('307')
+  })
+
+  test('a redirect that overrides nothing still reads back as a destination', () => {
+    const model = withHosts(
+      `            - name: v
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/" }
+                redirect: { https_redirect: true }`,
+      'a',
+    )
+    const result = ask(model, { authority: 'plain.example', path: '/thing' })
+    expect(result.explanation).toContain('https://plain.example/thing')
+  })
+
+  test('a route that disables a filter says so', () => {
+    const result = matchRequest(model, {
+      authority: 'api.example.com',
+      path: '/healthz',
+      method: 'GET',
+      port: 15006,
+      headers: {},
+    })
+    // The reason this is in the verdict rather than in the list of things not modelled: it
+    // is invisible in the route's match, and "why did this request skip authorization" has
+    // no answer anywhere else in the config.
+    expect(result.explanation).toContain('disables `envoy.filters.http.ext_authz`')
+    expect(result.explanation).toContain('answers directly with 200')
+    expect(result.explanation).toContain('`OK`')
+  })
+
+  test('a route that only overrides a filter is not described as disabling it', () => {
+    const model = withHosts(
+      `            - name: v
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/" }
+                route: { cluster: a }
+                typed_per_filter_config:
+                  envoy.filters.http.lua:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.LuaPerRoute
+                    name: extra`,
+      'a',
+    )
+    const result = ask(model, {})
+    expect(result.explanation).toContain('overrides the configuration of `envoy.filters.http.lua`')
+    expect(result.explanation).not.toContain('disables')
   })
 })
