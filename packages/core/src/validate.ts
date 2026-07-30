@@ -199,6 +199,86 @@ export function validate(model: ConfigModel): Diagnostic[] {
     for (const host of config.virtualHosts) checkVirtualHost(host, out)
   }
 
+  // ---- transport and filter order --------------------------------------------------
+
+  const ROUTER = 'envoy.filters.http.router'
+
+  for (const listener of model.listeners) {
+    if (listener.filterChains.length === 0 && listener.defaultFilterChain === undefined) {
+      out.push({
+        severity: 'error',
+        code: 'no-filter-chains',
+        message: `\`${listener.name ?? 'This listener'}\` has no filter chains.`,
+        detail:
+          'A listener with nothing to hand a connection to will accept it and then do nothing with it. Envoy rejects this at boot.',
+        path: listener.path,
+        range: listener.range,
+      })
+    }
+
+    for (const chain of [...listener.filterChains, listener.defaultFilterChain]) {
+      if (!chain) continue
+
+      // SNI is read off the TLS handshake, so a chain that never terminates TLS is never
+      // offered one to match against. This is silent at boot and looks, from the outside,
+      // exactly like a routing bug.
+      if ((chain.match?.serverNames.length ?? 0) > 0 && chain.tls === undefined) {
+        out.push({
+          severity: 'warning',
+          code: 'sni-without-tls',
+          message: `This chain matches on SNI (${chain.match!.serverNames.join(', ')}) but does not terminate TLS.`,
+          detail:
+            'Server names come from the TLS handshake. Without a `transport_socket` configuring TLS on this chain there is no SNI to compare against, so the criterion can never be satisfied and the chain will not be selected.',
+          path: chain.match!.path,
+          range: chain.match!.range,
+        })
+      }
+
+      if (
+        chain.tls !== undefined &&
+        chain.tls.certificateCount === 0 &&
+        chain.tls.sdsSecretNames.length === 0
+      ) {
+        out.push({
+          severity: 'error',
+          code: 'tls-without-certificate',
+          message: 'This chain terminates TLS but has no certificate.',
+          detail:
+            'A downstream TLS context needs either `tls_certificates` or `tls_certificate_sds_secret_configs`. With neither, the handshake has nothing to present.',
+          path: chain.tls.path,
+          range: chain.tls.range,
+        })
+      }
+
+      const filters = chain.hcm?.httpFilters
+      if (!filters || filters.length === 0) continue
+
+      // The router is the terminal filter: it is what actually dispatches the request
+      // upstream. Envoy refuses to start if it is not last, and the mistake is easy to make
+      // because appending a new filter to the end of the list is the natural edit.
+      const at = filters.indexOf(ROUTER)
+      if (at === -1) {
+        out.push({
+          severity: 'error',
+          code: 'no-router-filter',
+          message: 'This HTTP filter chain has no router filter.',
+          detail: `Without \`${ROUTER}\` nothing dispatches the request upstream, so every route resolves and then goes nowhere.`,
+          path: chain.hcm!.path,
+          range: chain.hcm!.range,
+        })
+      } else if (at !== filters.length - 1) {
+        out.push({
+          severity: 'error',
+          code: 'router-not-last',
+          message: `The router filter must be last — ${filters.length - 1 - at} filter${filters.length - 1 - at === 1 ? '' : 's'} follow it.`,
+          detail: `\`${filters.slice(at + 1).join('`, `')}\` will never run: the router terminates the chain by dispatching upstream, so anything after it is unreachable. Envoy refuses to start on this.`,
+          path: chain.hcm!.path,
+          range: chain.hcm!.range,
+        })
+      }
+    }
+  }
+
   // ---- listeners with nowhere to route --------------------------------------------
 
   const knownRouteConfigNames = new Set(

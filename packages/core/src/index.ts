@@ -19,6 +19,12 @@ export { parse, type ConfigFormat, type ParseResult } from './parse.js'
 export { buildModel, type ModelResult } from './model.js'
 export { validate } from './validate.js'
 export {
+  ALL_DOCS,
+  docsForCode,
+  docsForKind,
+  type DocLink,
+} from './docs.js'
+export {
   buildGraph,
   type Graph,
   type GraphEdge,

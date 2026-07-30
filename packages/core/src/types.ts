@@ -57,6 +57,27 @@ export interface FilterChain extends Sourced {
   hcm?: HttpConnectionManager
   /** Network filter names in order, including the HCM. For the graph, and for context. */
   filterNames: string[]
+  /** Downstream TLS, when the chain terminates it. Absent means plaintext. */
+  tls?: TlsContext
+}
+
+/**
+ * The parts of a TLS context worth knowing about without reading the keys.
+ *
+ * Modelled because SNI-based filter chain matching only works on a chain that actually
+ * terminates TLS — a `server_names` match on a plaintext chain is a common and completely
+ * silent mistake. Nothing here holds key material; see `redact.ts` for that.
+ */
+export interface TlsContext extends Sourced {
+  /** `envoy.transport_sockets.tls`, or whatever was written. */
+  socketName?: string
+  /** How many inline/file certificates are configured. */
+  certificateCount: number
+  /** Certificates delivered by SDS, by name. */
+  sdsSecretNames: string[]
+  alpnProtocols: string[]
+  /** Downstream only: whether clients must present a certificate. */
+  requireClientCertificate: boolean
 }
 
 /**
@@ -182,6 +203,12 @@ export interface Cluster extends Sourced {
   endpoints: Endpoint[]
   /** True when endpoints come from EDS, so an empty `endpoints` is expected. */
   usesEds: boolean
+  /** Upstream TLS, when this cluster speaks it. */
+  tls?: TlsContext
+  /** Whether health checking, circuit breaking and outlier detection are configured. */
+  hasHealthChecks: boolean
+  hasCircuitBreakers: boolean
+  hasOutlierDetection: boolean
 }
 
 export interface Endpoint extends Sourced {

@@ -196,3 +196,133 @@ static_resources:
     expect(found?.message).toContain('SORT_OF_DNS')
   })
 })
+
+describe('http filter order', () => {
+  const withFilters = (names: string[]) => `
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 1 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          route_config: { virtual_hosts: [] }
+          http_filters:
+${names.map((n) => `          - name: ${n}`).join('\n')}
+  clusters: []
+`
+
+  test('the router last is fine', () => {
+    expect(
+      codes(withFilters(['envoy.filters.http.cors', 'envoy.filters.http.router'])),
+    ).not.toContain('router-not-last')
+  })
+
+  test('a filter after the router can never run', () => {
+    const found = analyse(
+      withFilters(['envoy.filters.http.router', 'envoy.filters.http.cors']),
+    ).diagnostics.find((d) => d.code === 'router-not-last')
+    expect(found?.severity).toBe('error')
+    // Names the filters that are stranded, not just the fact of it.
+    expect(found?.detail).toContain('envoy.filters.http.cors')
+  })
+
+  test('no router at all is an error', () => {
+    expect(codes(withFilters(['envoy.filters.http.cors']))).toContain('no-router-filter')
+  })
+})
+
+describe('transport', () => {
+  const chain = (body: string) => `
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 443 } }
+    filter_chains:
+    - ${body}
+      filters: []
+  clusters: []
+`
+
+  test('SNI matching on a chain that does not terminate TLS is flagged', () => {
+    const found = analyse(
+      chain('filter_chain_match: { server_names: ["www.foo.com"] }'),
+    ).diagnostics.find((d) => d.code === 'sni-without-tls')
+    expect(found?.severity).toBe('warning')
+    expect(found?.detail).toContain('TLS handshake')
+  })
+
+  test('SNI matching on a chain that does terminate TLS is not', () => {
+    expect(
+      codes(
+        chain(`filter_chain_match: { server_names: ["www.foo.com"] }
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+            - certificate_chain: { filename: /cert.pem }
+              private_key: { filename: /key.pem }`),
+      ),
+    ).not.toContain('sni-without-tls')
+  })
+
+  test('TLS with no certificate at all is an error', () => {
+    expect(
+      codes(
+        chain(`transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context: {}`),
+      ),
+    ).toContain('tls-without-certificate')
+  })
+
+  test('a certificate delivered by SDS counts', () => {
+    expect(
+      codes(
+        chain(`transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_certificate_sds_secret_configs:
+            - name: server_cert`),
+      ),
+    ).not.toContain('tls-without-certificate')
+  })
+
+  test('key material is counted, never carried into the model', () => {
+    const model = analyse(
+      chain(`transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            alpn_protocols: ["h2", "http/1.1"]
+            tls_certificates:
+            - private_key: { inline_string: "SUPER-SECRET" }`),
+    ).model
+    const tls = model.listeners[0]!.filterChains[0]!.tls!
+    expect(tls.certificateCount).toBe(1)
+    expect(tls.alpnProtocols).toEqual(['h2', 'http/1.1'])
+    expect(JSON.stringify(tls)).not.toContain('SUPER-SECRET')
+  })
+})
+
+test('a listener with no filter chains is an error', () => {
+  expect(
+    codes(`
+static_resources:
+  listeners:
+  - name: empty
+    address: { socket_address: { address: 0.0.0.0, port_value: 1 } }
+    filter_chains: []
+  clusters: []
+`),
+  ).toContain('no-filter-chains')
+})

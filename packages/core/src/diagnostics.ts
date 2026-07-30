@@ -29,9 +29,15 @@ export type DiagnosticCode =
   | 'duplicate-cluster-name'
   | 'duplicate-listener-address'
   | 'no-route-config'
+  | 'no-filter-chains'
   // shadowing and ordering
   | 'route-unreachable'
   | 'duplicate-domain'
+  | 'router-not-last'
+  | 'no-router-filter'
+  // transport
+  | 'sni-without-tls'
+  | 'tls-without-certificate'
   // dynamic config
   | 'dynamic-resource-not-resolvable'
 

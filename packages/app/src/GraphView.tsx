@@ -1,3 +1,4 @@
+import { docsForKind } from '@attache/core'
 import { useMemo, useState } from 'react'
 import { NODE_H, NODE_W, layoutGraph } from './graphLayout.js'
 import { useStore } from './store.js'
@@ -121,10 +122,26 @@ export function GraphView() {
       </div>
 
       <p className="graph-key">
-        Hover a node to trace what it reaches.
+        Hover a node to trace what it reaches and band it in the source.
         <span className="key-swatch dangling" /> referred to, not defined here
         <span className="key-swatch orphan" /> nothing routes here
       </p>
+
+      {/* The reference for whatever is under the cursor. Envoy's docs are generated from the
+          protos and hard to navigate — landing on the right message is most of the value, so
+          the link follows the hover rather than making you go and find it. */}
+      {hovered !== null &&
+        (() => {
+          const node = layout.nodes.find((n) => n.id === hovered)
+          const docs = node && docsForKind(node.kind)
+          return docs ? (
+            <p className="graph-doc">
+              <a href={docs.url} target="_blank" rel="noreferrer noopener">
+                Envoy reference: {docs.title} ↗
+              </a>
+            </p>
+          ) : null
+        })()}
     </div>
   )
 }

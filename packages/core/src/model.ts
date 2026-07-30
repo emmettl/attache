@@ -19,6 +19,7 @@ import type {
   RouteConfig,
   RouteMatch,
   SocketAddress,
+  TlsContext,
   VirtualHost,
   WeightedCluster,
 } from './types.js'
@@ -313,6 +314,51 @@ function filterChainMatch(c: Cursor): FilterChainMatch {
   }
 }
 
+/**
+ * A transport socket, read for its shape rather than its contents.
+ *
+ * The certificates are counted, never held: a config's key material is the one thing this
+ * package should be able to reason about without carrying around. `redact.ts` walks the raw
+ * document separately for exactly that reason.
+ *
+ * `common_tls_context` sits under both the downstream and upstream contexts, so one reader
+ * serves a listener's TLS and a cluster's.
+ */
+function tlsContext(socket: Cursor): TlsContext | undefined {
+  const name = socket.strAt('name')
+  const typed = socket.field('typedConfig')
+  if (!typed) return undefined
+
+  const type = typed.strAt('@type') ?? ''
+  if (!type.includes('TlsContext')) {
+    // Some other transport socket — raw_buffer, a proxy protocol wrapper, quic. Known to
+    // exist, not modelled, and said so.
+    typed.unmodelled()
+    return undefined
+  }
+
+  const common = typed.field('commonTlsContext')
+  const certificates = common?.field('tlsCertificates')?.items() ?? []
+  for (const certificate of certificates) {
+    // Consumed but never read. The fields under here are the private key and the chain, and
+    // this package has no business holding either.
+    certificate.unmodelled()
+  }
+
+  const sds = common?.field('tlsCertificateSdsSecretConfigs')?.items() ?? []
+
+  return {
+    ...sourced(typed),
+    socketName: name,
+    certificateCount: certificates.length,
+    sdsSecretNames: sds.map((s) => s.strAt('name')).filter((n): n is string => n !== undefined),
+    alpnProtocols: (common?.field('alpnProtocols')?.items() ?? [])
+      .map((a) => a.str())
+      .filter((a): a is string => a !== undefined),
+    requireClientCertificate: typed.field('requireClientCertificate')?.bool() ?? false,
+  }
+}
+
 function filterChain(c: Cursor): FilterChain {
   const filterNames: string[] = []
   let hcm: HttpConnectionManager | undefined
@@ -335,6 +381,7 @@ function filterChain(c: Cursor): FilterChain {
   }
 
   const match = c.field('filterChainMatch')
+  const socket = c.field('transportSocket')
 
   return {
     ...sourced(c),
@@ -342,6 +389,7 @@ function filterChain(c: Cursor): FilterChain {
     match: match ? filterChainMatch(match) : undefined,
     hcm,
     filterNames,
+    tls: socket ? tlsContext(socket) : undefined,
   }
 }
 
@@ -386,6 +434,15 @@ function cluster(c: Cursor): Cluster {
   ] as const)
   const eds = c.field('edsClusterConfig')
   const assignment = c.field('loadAssignment')
+  const socket = c.field('transportSocket')
+
+  // Presence, not contents. Whether a cluster has health checking at all is worth showing
+  // next to it in the graph; whether the interval is sensible is a judgement this package
+  // is not in a position to make, and the fields stay reported as unchecked.
+  const healthChecks = c.field('healthChecks')
+  const circuitBreakers = c.field('circuitBreakers')
+  const outlierDetection = c.field('outlierDetection')
+  for (const block of [healthChecks, circuitBreakers, outlierDetection]) block?.unmodelled()
 
   return {
     ...sourced(c),
@@ -395,6 +452,10 @@ function cluster(c: Cursor): Cluster {
     connectTimeout: c.strAt('connectTimeout'),
     endpoints: assignment ? endpointsOf(assignment) : [],
     usesEds: type === 'EDS' || eds !== undefined,
+    tls: socket ? tlsContext(socket) : undefined,
+    hasHealthChecks: healthChecks !== undefined,
+    hasCircuitBreakers: circuitBreakers !== undefined,
+    hasOutlierDetection: outlierDetection !== undefined,
   }
 }
 
