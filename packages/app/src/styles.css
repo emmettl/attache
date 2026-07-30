@@ -220,9 +220,54 @@ code {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* Set from App.tsx as a custom property, with the even split as the fallback so this file
+     still describes a working layout on its own. The narrow-screen rule at the bottom
+     overrides `grid-template-columns` outright, which it could not do if the panes were
+     sized by an inline style. */
+  grid-template-columns: var(--split-cols, minmax(0, 1fr) minmax(0, 1fr));
+  position: relative;
   flex: 1;
   min-height: 0;
+}
+
+/* Sits ON the source pane's existing border rather than beside it. The element itself is
+   transparent and several pixels wide — the hit area — and the line it shows on approach is
+   the pseudo-element, drawn over the hairline that is already there. */
+.splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--split, 0.5) * 100%);
+  width: 11px;
+  transform: translateX(-50%);
+  z-index: 4;
+  cursor: col-resize;
+  /* Without this a touch drag scrolls the page instead, and pointer capture never gets a
+     chance to see the move. */
+  touch-action: none;
+}
+
+.splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 calc(50% - 1px);
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+
+.splitter:hover::after,
+.splitter:active::after,
+.splitter:focus-visible::after {
+  opacity: 1;
+}
+
+.splitter:focus-visible {
+  outline: none;
+}
+
+.splitter:focus-visible::after {
+  box-shadow: var(--ring);
 }
 
 .pane {
@@ -1123,6 +1168,12 @@ code {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(12rem, 1fr) minmax(0, 1fr);
+  }
+
+  /* The panes are stacked here, so there is no vertical boundary for a horizontal drag
+     handle to sit on. A stored split from a wide window is simply not consulted. */
+  .splitter {
+    display: none;
   }
 
   .source-pane {

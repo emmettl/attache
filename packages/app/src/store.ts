@@ -13,6 +13,23 @@ import { linkTo, takeFromUrl } from './hash.js'
 // nothing but a window in which the two panes disagree.
 
 const STORAGE_KEY = 'attache.config.v1'
+const SPLIT_KEY = 'attache.split.v1'
+
+/** The share of the width the source pane takes. Its own key, so a bad config cannot lose it. */
+export const DEFAULT_SPLIT = 0.5
+/**
+ * Neither pane may be dragged shut.
+ *
+ * A pane collapsed to nothing looks like a broken app rather than like a choice, and there
+ * is no affordance left to get it back — the handle is at the very edge of the window, on
+ * top of a scrollbar. Twenty per cent is narrow enough to be a real setting and wide enough
+ * to still show what it is you would be dragging back.
+ */
+export const MIN_SPLIT = 0.2
+export const MAX_SPLIT = 0.8
+
+export const clampSplit = (fraction: number): number =>
+  Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, fraction))
 
 export type Tab = 'findings' | 'graph' | 'route'
 
@@ -71,8 +88,11 @@ interface State {
   request: RequestForm
   match: MatchResult | null
   shareLink: string | null
+  /** How much of the workspace width the source pane gets, between MIN_SPLIT and MAX_SPLIT. */
+  split: number
 
   setText: (text: string) => void
+  setSplit: (fraction: number) => void
   setTab: (tab: Tab) => void
   revealLine: (line: number) => void
   setHighlight: (block: LineRange | null) => void
@@ -112,7 +132,25 @@ function load(text: string) {
   return { text, analysis, graph: buildGraph(analysis.model) }
 }
 
+/**
+ * The stored split, read once at start-up rather than in `loadInitial`.
+ *
+ * Unlike the config, this has to be known before the first paint: restoring it a tick later
+ * would render the workspace at fifty-fifty and then jump, and a layout that moves on its
+ * own as the page settles is worse than one that never remembered anything. A stored value
+ * from an older build, or hand-edited, is clamped rather than trusted.
+ */
+function loadSplit(): number {
+  try {
+    const stored = Number(localStorage.getItem(SPLIT_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampSplit(stored) : DEFAULT_SPLIT
+  } catch {
+    return DEFAULT_SPLIT
+  }
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | undefined
+let splitTimer: ReturnType<typeof setTimeout> | undefined
 
 /**
  * Persist, but not on every keystroke.
@@ -133,6 +171,18 @@ function autosave(text: string): void {
   }, 400)
 }
 
+/** As above, and for the same reason: a drag is a hundred writes if you let it be. */
+function saveSplit(fraction: number): void {
+  clearTimeout(splitTimer)
+  splitTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(SPLIT_KEY, String(fraction))
+    } catch {
+      // A layout preference is not worth an error in front of somebody.
+    }
+  }, 250)
+}
+
 export const useStore = create<State>((set, get) => ({
   ...load(DEFAULT_EXAMPLE.text),
   tab: 'findings',
@@ -142,6 +192,13 @@ export const useStore = create<State>((set, get) => ({
   request: DEFAULT_REQUEST,
   match: null,
   shareLink: null,
+  split: loadSplit(),
+
+  setSplit(fraction) {
+    const split = clampSplit(fraction)
+    set({ split })
+    saveSplit(split)
+  },
 
   setText(text) {
     autosave(text)
