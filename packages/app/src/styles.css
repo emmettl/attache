@@ -179,6 +179,19 @@ code {
   position: relative;
 }
 
+/* Not remembering is the state worth colouring: it is the one somebody chose, and the one
+   they would want to confirm at a glance before pasting a production bootstrap in. Sized to
+   the longer of its two labels so the row does not shuffle when it is pressed. */
+.actions > button.remember {
+  min-width: 9.2rem;
+}
+
+.actions > button.remember[aria-pressed='false'] {
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+  color: var(--ok);
+  font-weight: 600;
+}
+
 .actions > button,
 .examples button {
   padding: 0.3rem 0.7rem;
@@ -220,9 +233,54 @@ code {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* Set from App.tsx as a custom property, with the even split as the fallback so this file
+     still describes a working layout on its own. The narrow-screen rule at the bottom
+     overrides `grid-template-columns` outright, which it could not do if the panes were
+     sized by an inline style. */
+  grid-template-columns: var(--split-cols, minmax(0, 1fr) minmax(0, 1fr));
+  position: relative;
   flex: 1;
   min-height: 0;
+}
+
+/* Sits ON the source pane's existing border rather than beside it. The element itself is
+   transparent and several pixels wide — the hit area — and the line it shows on approach is
+   the pseudo-element, drawn over the hairline that is already there. */
+.splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--split, 0.5) * 100%);
+  width: 11px;
+  transform: translateX(-50%);
+  z-index: 4;
+  cursor: col-resize;
+  /* Without this a touch drag scrolls the page instead, and pointer capture never gets a
+     chance to see the move. */
+  touch-action: none;
+}
+
+.splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 calc(50% - 1px);
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+
+.splitter:hover::after,
+.splitter:active::after,
+.splitter:focus-visible::after {
+  opacity: 1;
+}
+
+.splitter:focus-visible {
+  outline: none;
+}
+
+.splitter:focus-visible::after {
+  box-shadow: var(--ring);
 }
 
 .pane {
@@ -286,6 +344,26 @@ code {
   box-shadow:
     inset 3px 0 0 var(--accent),
     inset 0 -1px 0 color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* Lines outside whatever the graph is currently filtering to.
+   Faded AND desaturated, rather than either alone. Fading by itself reads as "loading" or
+   "disabled"; draining the syntax colour is what makes it read as "still here, just not
+   what you asked about" — the YAML stays perfectly readable if you look straight at it,
+   which matters, because this is a filtered VIEW of the config and not an edit to it. */
+.cm-masked {
+  opacity: 0.42;
+  filter: grayscale(0.9);
+}
+
+/* Two layers, and the band is the one that has to survive. It follows the pointer and
+   answers "which block is this?", so a banded line inside a masked region has just been
+   pointed AT — the mask washing it out would leave a hover over a graph node with nothing
+   visible happening in the source, which is exactly the case where the band earns its
+   keep. */
+.cm-masked.cm-band {
+  opacity: 0.8;
+  filter: grayscale(0.3);
 }
 
 /* A line something was said about. Tinted rather than underlined, because a squiggle under
@@ -604,8 +682,30 @@ code {
 
 /* ---- graph --------------------------------------------------------------- */
 
+/* Two boxes where there used to be one, and the split is the whole reason the search box
+   stays where it is put. An absolutely positioned child of a SCROLLING element scrolls with
+   the content — it is positioned against the padding box, not the viewport of it — so a
+   floating control inside `.graph-scroll` would drift off the top of a tall graph the
+   moment you scrolled. `.graph-panel` does not scroll, holds the positioning context, and
+   the canvas moves underneath it. */
+.graph-panel {
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* The top padding is the search panel's height plus its offset, so that at the top of the
+   scroll the drawing starts BELOW the panel instead of underneath it. A floating control
+   over a scrollable canvas will always cover something once you scroll — that is the deal
+   you take for it staying put — but covering the first row of a freshly filtered graph, at
+   the moment you have just narrowed it down to that row, is the one case worth spending
+   whitespace to avoid. */
 .graph-scroll {
+  flex: 1;
+  min-width: 0;
   overflow: auto;
+  padding: 6.1rem 0.8rem 0.8rem;
 }
 
 .graph-canvas {
@@ -789,6 +889,107 @@ code {
 
 .key-swatch.orphan {
   border-top: 3px solid var(--warning);
+}
+
+/* ---- graph search -------------------------------------------------------- */
+
+.graph-search {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  z-index: 5;
+  width: 17.5rem;
+  max-width: calc(100% - 1.1rem);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  /* Slightly transparent with a blur behind it, so the edges passing under the panel are
+     still legible as edges. Fully opaque reads as a hole punched in the diagram; fully
+     transparent puts node labels through the search box. */
+  background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
+  backdrop-filter: blur(7px);
+  box-shadow: var(--shadow-2), var(--edge-light);
+}
+
+/* `.filter-search` is shaped for a horizontal filter row, where growing is what it should
+   do. Here it is the full width of a column already. */
+.graph-search .filter-search {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.graph-search-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  /* A four-digit node count is enough to push this past the panel's width. Wrapping makes
+     the panel taller than the gutter reserved for it, which is untidy but readable —
+     overflowing sideways over the graph would not be. */
+  flex-wrap: wrap;
+}
+
+.graph-search-count {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.graph-search .chip {
+  flex: none;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.72rem;
+}
+
+/* A pair of buttons sharing one pill, so the two modes read as one setting with two
+   positions rather than as two independent things you could turn on at once. */
+.segmented {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  padding: 1px;
+}
+
+.segmented button {
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  transition:
+    background 0.15s var(--ease),
+    color 0.15s var(--ease);
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--bg-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-1), var(--edge-light);
+}
+
+.segmented button:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* The nodes whose own text matched, as against the ones pulled in around them. Both are
+   kept and both are legible; this says which ones you actually typed. */
+.graph-node.hit {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+  box-shadow: var(--shadow-1), var(--edge-light),
+    0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.graph-node.hit.dim {
+  box-shadow: none;
 }
 
 /* ---- route tester -------------------------------------------------------- */
@@ -1008,6 +1209,12 @@ code {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(12rem, 1fr) minmax(0, 1fr);
+  }
+
+  /* The panes are stacked here, so there is no vertical boundary for a horizontal drag
+     handle to sit on. A stored split from a wide window is simply not consulted. */
+  .splitter {
+    display: none;
   }
 
   .source-pane {

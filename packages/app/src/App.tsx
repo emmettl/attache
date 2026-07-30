@@ -6,7 +6,7 @@ import { Findings } from './Findings.js'
 import { GraphView } from './GraphView.js'
 import { Logo } from './Logo.js'
 import { RouteTester } from './RouteTester.js'
-import { useStore, type Tab } from './store.js'
+import { DEFAULT_SPLIT, MAX_SPLIT, MIN_SPLIT, useStore, type Tab } from './store.js'
 
 const TABS: { id: Tab; title: string }[] = [
   { id: 'findings', title: 'Findings' },
@@ -22,6 +22,9 @@ export function App() {
   const summary = useStore((s) => s.analysis.summary)
   const format = useStore((s) => s.analysis.format)
   const loadInitial = useStore((s) => s.loadInitial)
+  const split = useStore((s) => s.split)
+  const setSplit = useStore((s) => s.setSplit)
+  const remember = useStore((s) => s.remember)
 
   useEffect(() => {
     void loadInitial()
@@ -49,7 +52,14 @@ export function App() {
         <Actions />
       </header>
 
-      <div className="workspace">
+      {/* The split is handed to CSS as a custom PROPERTY rather than as
+          `grid-template-columns` directly, and that is not decoration. An inline style beats
+          a stylesheet rule, so setting the real property here would win against the
+          narrow-screen media query at the bottom of `styles.css` and leave a phone rendering
+          two columns of twenty characters each. A custom property loses that fight by
+          construction: the media query simply sets `grid-template-columns` itself and the
+          variable stops being consulted. */}
+      <div className="workspace" style={splitStyle(split)}>
         <section className="pane source-pane" onDragOver={allowDrop} onDrop={(event) => void drop(event, setText)}>
           <div className="pane-head">
             <span className="format">{format === 'config-dump' ? 'config_dump' : 'bootstrap'}</span>
@@ -64,6 +74,8 @@ export function App() {
             ))}
           </div>
         </section>
+
+        <Splitter split={split} setSplit={setSplit} />
 
         <section className="pane result-pane">
           <nav className="tabs">
@@ -83,14 +95,104 @@ export function App() {
         </section>
       </div>
 
+      {/* The claim about uploading is unconditional and stays that way. What used to be sold
+          alongside it — that a reload brings your config back — is a property somebody may
+          not want, so it now reports which way the setting is set instead of promising one
+          of them. */}
       <footer className="bar foot">
         <span>
-          Everything happens in this tab. Nothing is uploaded — reload and your config is still
-          here, because it never left.
+          Everything happens in this tab. Nothing is uploaded.{' '}
+          {remember
+            ? 'This config is kept in this browser until you clear it.'
+            : 'This config is not remembered — it goes when you close the tab.'}
         </span>
         <span className="chars">{text.length.toLocaleString()} characters</span>
       </footer>
     </div>
+  )
+}
+
+/**
+ * Two variables, one number, because CSS cannot derive one from the other.
+ *
+ * The grid needs `fr` units — percentage tracks would let a pane shrink below its share
+ * whenever its content happened to be narrow — and there is no way to build an `fr` out of a
+ * number in a stylesheet. The handle needs a plain fraction to position itself against. So
+ * both are written here, from one source, and the handle lands exactly on the track boundary
+ * because the two tracks sum to one with no gap between them.
+ *
+ * `minmax(0, …)` on BOTH tracks. Without it a grid item's automatic minimum size is its
+ * content, so a pane refuses to go narrower than the widest thing in it — which for the
+ * graph is a canvas several thousand pixels wide, and the horizontal scrolling that exists
+ * to handle exactly that stops working.
+ */
+function splitStyle(split: number): React.CSSProperties {
+  return {
+    '--split': split,
+    '--split-cols': `minmax(0, ${split}fr) minmax(0, ${1 - split}fr)`,
+  } as React.CSSProperties
+}
+
+/**
+ * The drag handle between the panes.
+ *
+ * Absolutely positioned over the border the source pane already draws, rather than being a
+ * track of its own: a third grid column would need its own border to be visible, and a
+ * second hairline a pixel from the first reads as a rendering bug rather than as a control.
+ * It is wider than the line it covers, because a one-pixel hit area is a dexterity test.
+ *
+ * Pointer events rather than mouse events, and the capture is the whole reason. Without
+ * `setPointerCapture` the drag belongs to whatever the cursor is over, so moving faster than
+ * React re-renders — which is the normal way to drag something — hands the next event to the
+ * editor and the handle is simply dropped mid-gesture. Capture also brings a trackpad and a
+ * touchscreen along for free, where a `mousedown` listener would have needed a second set of
+ * touch handlers to match.
+ */
+function Splitter({ split, setSplit }: { split: number; setSplit: (fraction: number) => void }) {
+  const fractionAt = (event: React.PointerEvent<HTMLDivElement>): number | null => {
+    const workspace = event.currentTarget.parentElement
+    if (!workspace) return null
+    const box = workspace.getBoundingClientRect()
+    if (box.width === 0) return null
+    return (event.clientX - box.left) / box.width
+  }
+
+  return (
+    <div
+      className="splitter"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the source and results panes"
+      aria-valuenow={Math.round(split * 100)}
+      aria-valuemin={Math.round(MIN_SPLIT * 100)}
+      aria-valuemax={Math.round(MAX_SPLIT * 100)}
+      tabIndex={0}
+      onPointerDown={(event) => {
+        // Stops the gesture starting a text selection that then follows the cursor across
+        // both panes, which is what a drag looks like to a browser that was not told.
+        event.preventDefault()
+        // ...and focusing is the other thing that default action was doing. Suppressing it
+        // silently cost the arrow keys: the handle was reachable by Tab but not by clicking
+        // the thing you had just finished dragging, which is when you would want to nudge it.
+        event.currentTarget.focus()
+        event.currentTarget.setPointerCapture(event.pointerId)
+      }}
+      onPointerMove={(event) => {
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+        const fraction = fractionAt(event)
+        if (fraction !== null) setSplit(fraction)
+      }}
+      onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+      // Back to even. The one thing somebody who has dragged themselves somewhere unhelpful
+      // reliably wants, and it costs a line.
+      onDoubleClick={() => setSplit(DEFAULT_SPLIT)}
+      onKeyDown={(event) => {
+        const step = event.key === 'ArrowLeft' ? -0.02 : event.key === 'ArrowRight' ? 0.02 : 0
+        if (step === 0) return
+        event.preventDefault()
+        setSplit(split + step)
+      }}
+    />
   )
 }
 
@@ -103,13 +205,20 @@ async function drop(event: React.DragEvent, setText: (text: string) => void) {
 }
 
 /**
- * Load, save and share.
+ * Load, save, share, and get rid of.
  *
  * Sharing is the one that needs a gate. A URL fragment never reaches a server, which is the
  * usual argument for putting a document in one — but a link goes to a person, and an Envoy
  * bootstrap carries a TLS private key more often than not. So the config goes through the
  * core's redactor first, and if it finds key material the link is not made until the user
  * has seen what would have travelled and chosen to strip it.
+ *
+ * Clearing needs a gate of its own, for the opposite reason. Attaché keeps no copy anywhere
+ * else — that is the whole argument of this app — so a config that has not been downloaded
+ * is genuinely gone, and a one-click destroy sitting next to Download is a trap. The same
+ * `.dialogue` as the share flow rather than `window.confirm`, which cannot be styled, blocks
+ * the page, and looks like something the browser is telling you rather than something this
+ * app is asking.
  */
 function Actions() {
   const text = useStore((s) => s.text)
@@ -117,7 +226,11 @@ function Actions() {
   const share = useStore((s) => s.share)
   const shareLink = useStore((s) => s.shareLink)
   const clearShare = useStore((s) => s.clearShare)
+  const clearConfig = useStore((s) => s.clearConfig)
+  const remember = useStore((s) => s.remember)
+  const setRemember = useStore((s) => s.setRemember)
   const [pendingSecrets, setPendingSecrets] = useState<string | null>(null)
+  const [pendingClear, setPendingClear] = useState(false)
 
   const onShare = () => {
     const secrets = findSecrets(text)
@@ -133,6 +246,47 @@ function Actions() {
       <button onClick={() => void openFile(setText)}>Open file</button>
       <button onClick={() => download(text)}>Download</button>
       <button onClick={onShare}>Share link</button>
+      <button onClick={() => setPendingClear(true)}>Clear</button>
+
+      {/* It says which way it is set rather than what pressing it would do. A button
+          labelled "Remember" is ambiguous about whether that is the state or the offer, and
+          this is a privacy setting — the one kind where a user guessing wrong is a real
+          cost. The engaged state is the non-default one, so that is the one that is
+          coloured. */}
+      <button
+        className="remember"
+        aria-pressed={remember}
+        onClick={() => setRemember(!remember)}
+        title={
+          remember
+            ? 'This config is saved in this browser and comes back on reload. Click to stop.'
+            : 'This config is not saved anywhere and goes when the tab closes. Click to keep it.'
+        }
+      >
+        {remember ? 'Remembering' : 'Not remembering'}
+      </button>
+
+      {pendingClear && (
+        <div className="dialogue" role="alertdialog">
+          <p>Clear this config?</p>
+          <p className="muted">
+            The editor goes back to the example and the copy kept in this browser is deleted.
+            Attaché has no other copy — that is rather the point of it — so if you have not
+            downloaded this config, it is gone.
+          </p>
+          <div className="dialogue-actions">
+            <button
+              onClick={() => {
+                setPendingClear(false)
+                clearConfig()
+              }}
+            >
+              Clear it
+            </button>
+            <button onClick={() => setPendingClear(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {pendingSecrets && (
         <div className="dialogue" role="alertdialog">

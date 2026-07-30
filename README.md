@@ -75,6 +75,13 @@ but Node built-ins — no runtime dependencies, one small tarball. That route ex
 an Envoy bootstrap usually has a TLS private key a few lines below the part you wanted to
 ask about, and "paste it into a website" is a reasonable thing to refuse to do.
 
+**It does keep a copy, and it says so.** The config is saved to this browser's
+`localStorage` so a reload does not lose your work — convenient for a scratch config, and
+not what you want on a shared machine or in the middle of a screenshare. **Clear** deletes
+the editor and that stored copy together, and **Not remembering** turns the saving off for
+good and removes whatever is already there. The footer states which of the two you are in,
+every time.
+
 **Share links are gated on that.** A config can go in a URL fragment, which never reaches a
 server — but a link goes to a *person*, and that is a different guarantee. Attaché scans
 for key material first and will not produce a link until it has been replaced with
