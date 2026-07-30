@@ -1,0 +1,25 @@
+{
+  "name": "attache",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/app"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @attache/app",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "oxlint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "preview": "npm run preview --workspace @attache/app",
+    "start": "npm run start --workspace @attache/app",
+    "typecheck": "tsc -b packages/core packages/app"
+  },
+  "devDependencies": {
+    "oxlint": "^1.71.0",
+    "typescript": "~7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

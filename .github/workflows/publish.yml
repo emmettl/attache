@@ -1,0 +1,123 @@
+name: Publish
+
+# Nothing here fires on a push. Publishing happens when a GitHub Release is published —
+# a deliberate act — or when somebody runs this by hand, which defaults to a dry run.
+#
+# That is on purpose. A workflow that publishes on merge to main means every merge is a
+# release whether you meant it or not, and `npm unpublish` is heavily restricted after 72
+# hours: a bad version is effectively permanent. The remedy for a mistake is a new version
+# with the broken one sitting on the registry forever, so the trigger should be something
+# you had to go and do.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — build and check everything, publish nothing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # Required for npm provenance: the attestation is signed with a short-lived OIDC token
+  # rather than anything stored in the repo.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          # Still needed with trusted publishing: it writes the .npmrc that points npm at
+          # the public registry. The auth line in it goes unused, because there is no
+          # token any more — npm exchanges the workflow's OIDC identity instead.
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later, and which npm a Node release bundles
+      # is not something to find out from a failed release. Checked rather than upgraded
+      # blindly, so the log says what the runner actually had.
+      - name: Check npm is new enough for OIDC
+        run: |
+          set -euo pipefail
+          echo "node $(node --version), npm $(npm --version)"
+          if [ "$(printf '11.5.1\n%s\n' "$(npm --version)" | sort -V | head -1)" != "11.5.1" ]; then
+            echo "::notice::npm $(npm --version) predates trusted publishing — upgrading"
+            npm install -g npm@^11.5.1
+            echo "now npm $(npm --version)"
+          fi
+
+      - run: npm ci
+
+      # The full check, before anything leaves the machine. Publishing something that
+      # does not lint, type-check or pass its tests is the one failure this workflow
+      # exists to prevent — CI on main can go red after a merge, and the release would
+      # otherwise sail past it.
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # Guards against the commonest release mistake: cutting v0.2.0 having forgotten to
+      # bump either package, and silently republishing — or failing to publish — 0.1.0.
+      # Deliberately not a lockstep requirement: the packages version independently, so
+      # this only asks that the tag matches SOMETHING.
+      - name: Check the release tag matches a package version
+        if: github.event_name == 'release'
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CORE=$(node -p "require('./packages/core/package.json').version")
+          APP=$(node -p "require('./packages/app/package.json').version")
+          echo "tag=$TAG core=$CORE app=$APP"
+          if [ "$TAG" != "$CORE" ] && [ "$TAG" != "$APP" ]; then
+            echo "::error::Release tag $GITHUB_REF_NAME matches neither @attache/core ($CORE) nor @attache/app ($APP). Bump a package, or retag."
+            exit 1
+          fi
+
+      # No NODE_AUTH_TOKEN. Both packages are published by a TRUSTED PUBLISHER — npm
+      # trades the `id-token: write` identity above for a short-lived credential, so there
+      # is no long-lived secret in this repo to leak, rotate or forget. Leaving a stale
+      # token in the environment would be worse than useless: npm prefers an explicit
+      # token over OIDC, so a revoked one turns a working release into a 401.
+      - name: Publish
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          published_any=0
+
+          for pkg in core app; do
+            name=$(node -p "require('./packages/$pkg/package.json').name")
+            version=$(node -p "require('./packages/$pkg/package.json').version")
+
+            # Already on the registry? Skip rather than fail. Both packages are released
+            # together but version independently, so a release that only touches the core
+            # will find the app unchanged — and that is not an error.
+            if npm view "$name@$version" version > /dev/null 2>&1; then
+              echo "::notice::$name@$version is already published — skipping"
+              echo "- \`$name@$version\` — already published, skipped" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+              echo "Dry run: $name@$version"
+              npm publish --workspace "$name" --provenance --dry-run
+              echo "- \`$name@$version\` — dry run, not published" >> "$GITHUB_STEP_SUMMARY"
+            else
+              # --provenance attaches a signed attestation linking this tarball to this
+              # commit and this workflow run. The same id-token: write that signs it is
+              # what authenticates the publish now, so the permission carries both jobs.
+              # access is public via publishConfig in each package.json.
+              npm publish --workspace "$name" --provenance
+              echo "- \`$name@$version\` — published" >> "$GITHUB_STEP_SUMMARY"
+              published_any=1
+            fi
+          done
+
+          if [ "$published_any" = "0" ] && [ "${DRY_RUN:-false}" != "true" ]; then
+            echo "::warning::Nothing was published — every version was already on the registry."
+          fi

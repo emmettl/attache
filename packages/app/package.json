@@ -1,0 +1,61 @@
+{
+  "name": "@attache/app",
+  "version": "0.1.0",
+  "description": "Attaché — an Envoy config workbench in the browser. Check a config, see what connects to what, and find out where a request actually goes. Run it with npx @attache/app.",
+  "keywords": [
+    "envoy",
+    "envoyproxy",
+    "xds",
+    "config",
+    "validation",
+    "route-matching",
+    "service-mesh"
+  ],
+  "license": "MIT",
+  "author": "Louis Emmett",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emmettl/attache.git",
+    "directory": "packages/app"
+  },
+  "homepage": "https://emmettl.github.io/attache/",
+  "type": "module",
+  "//publishConfig": "Scoped packages are RESTRICTED by default, and restricted publishing needs a paid npm plan — so without this the first release fails with a 402 that no dry run catches, because --dry-run never makes the access check. Set here rather than passed as --access public on the command line so that publishing by hand from a laptop cannot differ from publishing from CI.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "attache": "./bin/attache.js"
+  },
+  "//engines": "A floor, not a support statement: the bin uses only node: specifiers, ?? and optional chaining. CI builds and tests on 24.",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node bin/attache.js"
+  },
+  "//": "No runtime dependencies, deliberately. What ships is a prebuilt dist/ with everything already bundled into it — React, @attache/core and its `yaml` — and a bin that serves it using nothing but Node built-ins. So `npx @attache/app` downloads one small package and runs, instead of resolving an install tree first. That is the whole point of the npx route: somebody with a production config full of private keys should be able to get a local tool up in one command, without it going anywhere near a website.",
+  "devDependencies": {
+    "@attache/core": "0.1.0",
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "~7.0.2",
+    "vite": "^8.1.1",
+    "vitest": "^4.1.10",
+    "zustand": "^5.0.14"
+  }
+}

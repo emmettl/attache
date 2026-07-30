@@ -1,0 +1,34 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.tsbuildinfo
+*.local
+
+# Compiled output that landed in a source tree rather than in dist/. The core package is
+# TypeScript only and ships `src` in its `files`, so a stray .js or .d.ts here would be
+# committed AND published. `dist` above does not catch that.
+packages/core/src/**/*.js
+packages/core/src/**/*.d.ts
+packages/core/src/**/*.map
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.claude
+*.tgz

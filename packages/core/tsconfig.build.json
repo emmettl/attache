@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+
+    "target": "es2023",
+
+    // No "DOM". This package must not touch the browser — the app embeds it, but so could
+    // a CLI, a pre-commit hook or a CI check, and the moment `document` type-checks in
+    // here somebody will reach for it. Leaving DOM out of `lib` makes that a compile
+    // error rather than a convention nobody remembers.
+    "lib": ["ES2023"],
+    "module": "esnext",
+
+    // Relative imports in src carry an explicit .js extension, and TypeScript emits
+    // specifiers verbatim — so the published output resolves under plain Node ESM as
+    // well as under any bundler. Without the extensions the emitted `from './parse'`
+    // is unresolvable to Node.
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

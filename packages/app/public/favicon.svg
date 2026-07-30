@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#1c2333" />
+  <!-- One listener fanning out to two clusters: the shape the whole tool is about. -->
+  <circle cx="8" cy="16" r="3.2" fill="#7dd3fc" />
+  <circle cx="24" cy="9" r="3.2" fill="#a7f3d0" />
+  <circle cx="24" cy="23" r="3.2" fill="#a7f3d0" />
+  <path
+    d="M11 15 L21 9.5 M11 17 L21 22.5"
+    stroke="#64748b"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    fill="none"
+  />
+</svg>

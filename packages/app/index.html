@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>Attaché — an Envoy config workbench</title>
+    <meta
+      name="description"
+      content="Check an Envoy config, see what connects to what, and find out where a request actually goes. Runs entirely in your browser."
+    />
+
+    <!-- Absolute and hardcoded to the canonical Pages URL, unlike every other path in this
+         build. Crawlers cannot resolve a relative og:image, so these cannot follow
+         `base: './'` the way the app's own assets do. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Attaché — an Envoy config workbench" />
+    <meta
+      property="og:description"
+      content="Check an Envoy config, see what connects to what, and find out where a request actually goes. Runs entirely in your browser."
+    />
+    <meta property="og:url" content="https://emmettl.github.io/attache/" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
