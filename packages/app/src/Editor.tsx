@@ -1,3 +1,9 @@
+import {
+  acceptCompletion,
+  autocompletion,
+  completionKeymap,
+  startCompletion,
+} from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { yaml } from '@codemirror/lang-yaml'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
@@ -5,6 +11,7 @@ import { EditorState, StateEffect, StateField, type Extension } from '@codemirro
 import { Decoration, EditorView, keymap, lineNumbers, type DecorationSet } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import { useEffect, useRef } from 'react'
+import { valueCompletions } from './completion.js'
 import { useStore, type LineRange } from './store.js'
 
 // The source pane.
@@ -176,6 +183,52 @@ const theme = EditorView.theme({
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
     backgroundColor: 'color-mix(in srgb, var(--accent) 26%, transparent)',
   },
+
+  // ---- completion ----------------------------------------------------------------
+  //
+  // Themed here rather than in `styles.css`, because CodeMirror injects the autocomplete
+  // base theme into <head> at the same specificity a stylesheet rule can reach — so which
+  // one wins is decided by injection order, and it goes CodeMirror's way. Its default is a
+  // light-mode popup, which in dark mode is a white box full of white text.
+  '.cm-tooltip.cm-tooltip-autocomplete': {
+    border: '1px solid var(--line)',
+    borderRadius: '6px',
+    backgroundColor: 'var(--bg-raised)',
+    boxShadow: 'var(--shadow-2)',
+    overflow: 'hidden',
+  },
+  '.cm-tooltip-autocomplete > ul': {
+    fontFamily: 'var(--mono)',
+    fontSize: '12.5px',
+    maxHeight: '16rem',
+  },
+  '.cm-tooltip-autocomplete > ul > li': {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '0.75rem',
+    padding: '0.2rem 0.5rem',
+    color: 'var(--ink)',
+  },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
+    backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)',
+    color: 'var(--ink)',
+  },
+  // The part of the value matching what was typed. Weight rather than a second colour: these
+  // rows already carry a value and a gloss, and a third ink would be decoration.
+  '.cm-completionLabel': { flex: 'none' },
+  '.cm-completionMatchedText': { textDecoration: 'none', fontWeight: '700' },
+  // Pushed right and softened, so a column of values stays scannable down its left edge and
+  // the explanations sit out of the way of it.
+  '.cm-completionDetail': {
+    marginLeft: 'auto',
+    fontStyle: 'normal',
+    fontFamily: 'var(--sans)',
+    fontSize: '0.72rem',
+    color: 'var(--ink-soft)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
 })
 
 export function Editor() {
@@ -199,7 +252,54 @@ export function Editor() {
     const extensions: Extension[] = [
       lineNumbers(),
       history(),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
+      /**
+       * Value completion. See `completion.ts` for why it is values and never field names.
+       *
+       * `override` rather than a language-registered source, because that is the whole set:
+       * there is no fallback to word-completion from the document, which would offer every
+       * identifier already typed as though it were a candidate — including, in a YAML file,
+       * every field name in it. The one deliberate limit here would be undone by the default.
+       *
+       * Left on while typing, and that is safe here in a way it would not usually be. The
+       * source answers `null` everywhere except the handful of value positions it genuinely
+       * knows — a cluster reference, a discovery type, a filter name — so the menu cannot
+       * appear uninvited in the middle of a hostname or a path. Alt+Space is for reopening
+       * it after Escape, and for the empty value where there is no prefix to trigger on.
+       */
+      autocompletion({
+        override: [valueCompletions(() => useStore.getState().analysis.model)],
+        icons: false,
+      }),
+      /**
+       * Option+Space does not always arrive as a space.
+       *
+       * On macOS it inserts a non-breaking space, and depending on the browser and the
+       * keyboard layout `event.key` comes through as U+00A0 rather than U+0020 — at which
+       * point CodeMirror is matching "Alt- " against a binding for "Alt-Space" and the
+       * shortcut silently does nothing on the platform most likely to be running this.
+       *
+       * `event.code` is the physical key and is not affected by any of that. Registered
+       * before the keymap so it wins, and narrow enough that nothing else can reach it.
+       */
+      EditorView.domEventHandlers({
+        keydown(event, view) {
+          if (!event.altKey || event.ctrlKey || event.metaKey || event.code !== 'Space') return false
+          event.preventDefault()
+          return startCompletion(view)
+        },
+      }),
+      // Before `defaultKeymap`, which binds Escape and the arrow keys the menu also wants.
+      keymap.of([
+        { key: 'Alt-Space', run: startCompletion },
+        // The conventional one everywhere that is not a Mac, and harmless there.
+        { key: 'Ctrl-Space', run: startCompletion },
+        // Tab accepts, but ONLY with the menu open — `acceptCompletion` returns false
+        // otherwise, so the binding falls through and Tab still indents.
+        { key: 'Tab', run: acceptCompletion },
+        ...completionKeymap,
+        ...defaultKeymap,
+        ...historyKeymap,
+      ]),
       yaml(),
       syntaxHighlighting(highlight),
       bandField,

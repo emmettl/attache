@@ -17,6 +17,10 @@
   --ok: #197a4b;
 
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  /* Named because the completion popup needs it: it renders inside the editor, which sets
+     `--mono` on everything, and a one-line explanation in a monospace column reads as more
+     code rather than as the aside it is. */
+  --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --line-height: 20px;
 
   /* Elevation. Two layers each — a tight contact shadow plus a wider ambient one — because
@@ -92,7 +96,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font: 14px/1.5 var(--sans);
 }
 
 button {
