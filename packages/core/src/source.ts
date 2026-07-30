@@ -14,6 +14,15 @@ export interface Range {
   /** 1-based line and column of `start`. What a gutter and an error message want. */
   line: number
   column: number
+  /**
+   * 1-based line of `end`, so a range covers a BLOCK rather than a point.
+   *
+   * A mapping node's range spans everything under it, which is what lets the editor draw a
+   * band over the whole listener when you hover the listener in the graph. For a scalar
+   * this is usually the same as `line`, and callers that only want somewhere to scroll to
+   * can keep ignoring it.
+   */
+  endLine: number
 }
 
 /**

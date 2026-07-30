@@ -42,6 +42,14 @@ interface State {
   tab: Tab
   /** The line the editor should reveal, bumped each time so repeat clicks still scroll. */
   reveal: { line: number; nonce: number } | null
+  /**
+   * The block the editor should band, while something elsewhere is hovered.
+   *
+   * Separate from `reveal` because they answer different questions — "take me there" and
+   * "show me which part this is" — and a hover that stole the scroll position would make
+   * the graph unusable, since crossing it would drag the source pane around.
+   */
+  highlight: { startLine: number; endLine: number } | null
   request: RequestForm
   match: MatchResult | null
   shareLink: string | null
@@ -49,6 +57,7 @@ interface State {
   setText: (text: string) => void
   setTab: (tab: Tab) => void
   revealLine: (line: number) => void
+  setHighlight: (block: { startLine: number; endLine: number } | null) => void
   setRequest: (patch: Partial<RequestForm>) => void
   runMatch: () => void
   share: (text: string) => Promise<void>
@@ -109,6 +118,7 @@ export const useStore = create<State>((set, get) => ({
   ...load(DEFAULT_EXAMPLE.text),
   tab: 'findings',
   reveal: null,
+  highlight: null,
   request: DEFAULT_REQUEST,
   match: null,
   shareLink: null,
@@ -116,7 +126,9 @@ export const useStore = create<State>((set, get) => ({
   setText(text) {
     autosave(text)
     // A new config invalidates the old answer rather than leaving it there looking current.
-    set({ ...load(text), match: null, shareLink: null })
+    // The highlight goes too: it is a line range into text that no longer exists, and a
+    // band left hanging over unrelated lines is worse than no band.
+    set({ ...load(text), match: null, shareLink: null, highlight: null })
   },
 
   setTab(tab) {
@@ -126,6 +138,10 @@ export const useStore = create<State>((set, get) => ({
 
   revealLine(line) {
     set((state) => ({ reveal: { line, nonce: (state.reveal?.nonce ?? 0) + 1 } }))
+  },
+
+  setHighlight(block) {
+    set({ highlight: block })
   },
 
   setRequest(patch) {

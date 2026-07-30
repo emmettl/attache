@@ -18,6 +18,18 @@
 
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   --line-height: 20px;
+
+  /* Elevation. Two layers each — a tight contact shadow plus a wider ambient one — because
+     a single large blur reads as fog rather than as height. */
+  --shadow-1: 0 1px 2px rgb(16 20 27 / 0.06), 0 1px 3px rgb(16 20 27 / 0.07);
+  --shadow-2: 0 2px 4px rgb(16 20 27 / 0.06), 0 6px 16px rgb(16 20 27 / 0.1);
+  --shadow-3: 0 4px 8px rgb(16 20 27 / 0.08), 0 16px 40px rgb(16 20 27 / 0.16);
+  /* A hairline highlight along the top edge. Cheap, and it is most of what makes a surface
+     look lit rather than pasted on. */
+  --edge-light: inset 0 1px 0 rgb(255 255 255 / 0.7);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -33,6 +45,22 @@
     --warning: #e5b567;
     --info: #6fb3f5;
     --ok: #6ed69a;
+
+    /* Deeper and more opaque: on a dark surface a shadow has less contrast to work with,
+       so the same alpha simply disappears. */
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.25);
+    --shadow-2: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 20px rgb(0 0 0 / 0.36);
+    --shadow-3: 0 4px 10px rgb(0 0 0 / 0.4), 0 20px 48px rgb(0 0 0 / 0.55);
+    --edge-light: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
   }
 }
 
@@ -109,16 +137,39 @@ code {
 
 .actions > button,
 .examples button {
-  padding: 0.25rem 0.6rem;
+  padding: 0.3rem 0.7rem;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 7px;
   background: var(--bg-raised);
+  box-shadow: var(--shadow-1), var(--edge-light);
+  transition:
+    transform 0.15s var(--ease),
+    box-shadow 0.15s var(--ease),
+    border-color 0.15s var(--ease),
+    color 0.15s var(--ease);
 }
 
 .actions > button:hover,
 .examples button:hover {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
   color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2), var(--edge-light);
+}
+
+/* Pressed states move the button DOWN and drop the shadow — the same distance it rose on
+   hover, so a click feels like the surface actually taking the press. */
+.actions > button:active,
+.examples button:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-1);
+}
+
+.actions > button:focus-visible,
+.examples button:focus-visible,
+.tabs button:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
 }
 
 /* ---- layout -------------------------------------------------------------- */
@@ -203,14 +254,59 @@ code {
   color: var(--info);
 }
 
-.source {
+.source-wrap {
+  position: relative;
   flex: 1;
   min-width: 0;
+  background: var(--bg);
+}
+
+/* The band layer, behind the text. Clipped to the pane and moved by hand from the
+   textarea's scroll handler — it must never have scrollbars of its own. */
+.bands {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bands-inner {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
+.band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  min-width: 100%;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 28%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--accent) 28%, transparent);
+  animation: band-in 0.14s var(--ease);
+}
+
+@keyframes band-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.source {
+  position: relative;
+  width: 100%;
+  height: 100%;
   padding: 0.6rem 0.7rem;
   border: none;
   outline: none;
   resize: none;
-  background: var(--bg);
+  /* Transparent, so the bands behind show through. The pane's own background is on
+     `.source-wrap`. */
+  background: transparent;
   color: var(--ink);
   font: inherit;
   line-height: var(--line-height);
@@ -273,10 +369,25 @@ code {
 .finding {
   border: 1px solid var(--line);
   border-left-width: 3px;
-  border-radius: 5px;
-  margin-bottom: 0.5rem;
-  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  margin-bottom: 0.55rem;
+  padding: 0.5rem 0.65rem;
   background: var(--bg-raised);
+  box-shadow: var(--shadow-1), var(--edge-light);
+  transition:
+    transform 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
+}
+
+.finding:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2), var(--edge-light);
+}
+
+.finding-head:focus-visible {
+  outline: none;
+  border-radius: 5px;
+  box-shadow: var(--ring);
 }
 
 .finding.error {
@@ -366,82 +477,191 @@ code {
 
 /* ---- graph --------------------------------------------------------------- */
 
-.graph {
-  display: flex;
-  gap: 0.8rem;
-  align-items: flex-start;
+.graph-scroll {
   overflow: auto;
 }
 
-.graph-column {
-  min-width: 12rem;
-  flex: none;
+.graph-canvas {
+  position: relative;
 }
 
-.graph-column h3 {
-  margin: 0 0 0.4rem;
-  font-size: 0.72rem;
+.graph-header {
+  position: absolute;
+  top: 0;
+  font-size: 0.68rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
+  font-weight: 700;
   color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* The edge layer sits under the nodes and takes no pointer events, so hovering a node is
+   never intercepted by a curve passing over it. */
+.graph-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.edge {
+  color: color-mix(in srgb, var(--ink-soft) 55%, transparent);
+  transition: opacity 0.18s var(--ease);
+}
+
+.edge path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.edge text {
+  fill: var(--ink-soft);
+  font-size: 10.5px;
+  font-family: var(--mono);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+}
+
+.edge.dangling {
+  color: var(--error);
+}
+
+.edge.dangling path {
+  stroke-dasharray: 5 4;
+}
+
+.edge.lit {
+  color: var(--accent);
+}
+
+.edge.lit path {
+  stroke-width: 2.4;
+}
+
+.edge.dim {
+  opacity: 0.15;
 }
 
 .graph-node {
+  position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  width: 100%;
+  justify-content: center;
+  gap: 0.1rem;
+  padding: 0.4rem 0.6rem;
   text-align: left;
   border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 0.4rem 0.5rem;
-  margin-bottom: 0.4rem;
+  border-radius: 9px;
   background: var(--bg-raised);
+  box-shadow: var(--shadow-1), var(--edge-light);
+  transition:
+    transform 0.18s var(--ease),
+    box-shadow 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    opacity 0.18s var(--ease);
 }
 
-.graph-node:hover {
-  border-color: var(--accent);
+/* A tinted left edge, so a column is identifiable without reading its header. */
+.graph-node::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  opacity: 0.55;
+}
+
+.graph-node.cluster::before {
+  background: var(--ok);
+}
+.graph-node.endpoint::before {
+  background: var(--ink-soft);
+}
+.graph-node.route::before,
+.graph-node.virtualHost::before {
+  background: var(--warning);
+}
+
+.graph-node:hover,
+.graph-node.lit {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2), var(--edge-light);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+
+.graph-node:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-2), var(--ring);
+}
+
+.graph-node.dim {
+  opacity: 0.32;
+  box-shadow: none;
 }
 
 .graph-node.dangling {
   border-style: dashed;
-  border-color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 60%, var(--line));
+}
+
+.graph-node.dangling::before {
+  background: var(--error);
+  opacity: 1;
 }
 
 .graph-node.orphan {
-  border-color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--line));
+}
+
+.graph-node.orphan::before {
+  background: var(--warning);
+  opacity: 1;
 }
 
 .graph-label {
-  font-weight: 600;
-}
-
-.graph-detail,
-.graph-edges,
-.graph-flag {
-  font-size: 0.78rem;
-  color: var(--ink-soft);
+  font-weight: 620;
+  font-size: 0.84rem;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .graph-detail {
   font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.graph-edges {
+.graph-key {
   display: flex;
-  flex-direction: column;
-  margin-top: 0.2rem;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.9rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
 }
 
-.graph-edge.dangling {
-  color: var(--error);
+.key-swatch {
+  display: inline-block;
+  width: 1.1rem;
+  height: 0;
+  margin-left: 0.7rem;
+  border-top: 2px dashed var(--error);
 }
 
-.graph-flag.dangling {
-  color: var(--error);
-}
-.graph-flag.orphan {
-  color: var(--warning);
+.key-swatch.orphan {
+  border-top: 3px solid var(--warning);
 }
 
 /* ---- route tester -------------------------------------------------------- */
@@ -472,20 +692,33 @@ code {
 .request-form textarea {
   font-family: var(--mono);
   font-size: 0.85rem;
-  padding: 0.3rem 0.4rem;
+  padding: 0.35rem 0.5rem;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 7px;
   background: var(--bg-raised);
   color: var(--ink);
   resize: vertical;
+  box-shadow: var(--shadow-1);
+  transition:
+    border-color 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
+}
+
+.request-form input:focus,
+.request-form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring);
 }
 
 .verdict {
-  padding: 0.5rem 0.65rem;
-  border-radius: 5px;
+  padding: 0.6rem 0.75rem;
+  border-radius: 9px;
+  border: 1px solid var(--line);
   border-left: 3px solid var(--ok);
-  background: var(--bg-sunken);
-  margin: 0 0 0.6rem;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-1), var(--edge-light);
+  margin: 0 0 0.7rem;
   font-weight: 550;
 }
 
@@ -575,15 +808,23 @@ code {
 
 .dialogue {
   position: absolute;
-  top: 2.2rem;
+  top: 2.4rem;
   right: 0;
   z-index: 10;
   width: min(30rem, 90vw);
-  padding: 0.8rem;
+  padding: 0.9rem;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 11px;
   background: var(--bg-raised);
-  box-shadow: 0 10px 30px rgb(0 0 0 / 0.18);
+  box-shadow: var(--shadow-3), var(--edge-light);
+  animation: dialogue-in 0.18s var(--ease);
+}
+
+@keyframes dialogue-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.985);
+  }
 }
 
 .dialogue p {
@@ -608,9 +849,24 @@ code {
 }
 
 .dialogue-actions button {
-  padding: 0.25rem 0.7rem;
+  padding: 0.3rem 0.8rem;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 7px;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-1), var(--edge-light);
+  transition:
+    transform 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
+}
+
+.dialogue-actions button:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2), var(--edge-light);
+}
+
+.dialogue-actions button:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
 }
 
 .dialogue-actions button:first-child {

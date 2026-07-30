@@ -34,7 +34,7 @@ export interface Positions {
   range(nodeRange: readonly [number, number, number] | undefined | null): Range
 }
 
-const EMPTY_RANGE: Range = { start: 0, end: 0, line: 1, column: 1 }
+const EMPTY_RANGE: Range = { start: 0, end: 0, line: 1, column: 1, endLine: 1 }
 
 function positionsFrom(lineCounter: LineCounter): Positions {
   return {
@@ -46,7 +46,11 @@ function positionsFrom(lineCounter: LineCounter): Positions {
       if (!nodeRange) return EMPTY_RANGE
       const [start, end] = nodeRange
       const { line, col } = lineCounter.linePos(start)
-      return { start, end, line, column: col }
+      // A block node's range ends on the newline AFTER its last line, so measuring the end
+      // directly would claim one line more than the block occupies and the highlight would
+      // bleed into whatever follows. Step back one character to land inside it.
+      const last = lineCounter.linePos(Math.max(start, end - 1))
+      return { start, end, line, column: col, endLine: Math.max(line, last.line) }
     },
   }
 }
@@ -90,7 +94,9 @@ export function parse(text: string): ParseResult {
       // same span.
       message: error.message.split('\n\n')[0]!,
       path: [],
-      range: { start, end, line, column: col },
+      // A syntax error is a point, not a block: the parser reports where it gave up, and
+      // claiming the rest of the file as "the error" would be a lie the highlight would tell.
+      range: { start, end, line, column: col, endLine: line },
     }
   })
 
