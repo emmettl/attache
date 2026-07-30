@@ -16,6 +16,7 @@ import type { ParseResult } from './parse.js'
 import type {
   Bootstrap,
   Cluster,
+  ClusterRef,
   ConfigModel,
   DynamicResources,
   Endpoint,
@@ -36,6 +37,7 @@ import type {
   RouteForwarding,
   RouteMatch,
   SocketAddress,
+  TcpProxy,
   TlsContext,
   UpgradeConfig,
   VirtualHost,
@@ -80,6 +82,113 @@ function regexRewrite(c: Cursor | undefined): RegexRewrite | undefined {
   const regex = pattern?.strAt('regex')
   if (regex === undefined) return undefined
   return { pattern: regex, substitution: c.strAt('substitution') ?? '' }
+}
+
+// ---- clusters named by extensions -------------------------------------------------
+
+/**
+ * `GrpcService.envoy_grpc.cluster_name`, which is how nearly every extension names an
+ * upstream it talks to.
+ *
+ * The `google_grpc` arm beside it names a target URI rather than a cluster, so there is
+ * nothing here to resolve against this config — read and left, like everything else that is
+ * real configuration and not a routing fact.
+ */
+function envoyGrpcCluster(service: Cursor | undefined): string | undefined {
+  if (!service) return undefined
+  service.field('googleGrpc')?.acknowledge()
+  return service.field('envoyGrpc')?.strAt('clusterName')
+}
+
+/**
+ * Where each extension this package recognises keeps the cluster it talks to.
+ *
+ * Matched on the `@type`, which is the reliable half — `name` is free text and a config that
+ * spells a filter `authz` rather than `envoy.filters.http.ext_authz` is legal and common.
+ * The substring is enough: Envoy's type URLs end in a message name that is unique across the
+ * extensions worth reading, and matching the full URL would break on the version suffix the
+ * day v4 arrives.
+ *
+ * Each reader takes the extension's `typed_config` and returns every cluster it names, which
+ * is usually one and is a list because `jwt_authn` carries a provider map and a real config
+ * has several.
+ */
+const CLUSTER_NAMING_EXTENSIONS: { type: string; read: (c: Cursor) => (string | undefined)[] }[] = [
+  {
+    // Two arms, and a config uses one or the other: a gRPC authorization service, or an
+    // HTTP one whose `server_uri` names the cluster instead.
+    type: 'ExtAuthz',
+    read: (c) => [
+      envoyGrpcCluster(c.field('grpcService')),
+      c.field('httpService')?.field('serverUri')?.strAt('cluster'),
+    ],
+  },
+  { type: 'RateLimit', read: (c) => [envoyGrpcCluster(c.field('rateLimitService')?.field('grpcService'))] },
+  { type: 'ExternalProcessor', read: (c) => [envoyGrpcCluster(c.field('grpcService'))] },
+  {
+    // `providers` is a proto map keyed by provider name, so `fields()` rather than `field()`
+    // — the same reason `typed_per_filter_config` needs it.
+    type: 'JwtAuthentication',
+    read: (c) =>
+      (c.field('providers')?.fields() ?? []).map(({ cursor }) =>
+        cursor.field('remoteJwks')?.field('httpUri')?.strAt('cluster'),
+      ),
+  },
+  {
+    // Both gRPC access loggers wrap theirs the same way.
+    type: 'GrpcAccessLogConfig',
+    read: (c) => [envoyGrpcCluster(c.field('commonConfig')?.field('grpcService'))],
+  },
+  { type: 'OpenTelemetryConfig', read: (c) => [envoyGrpcCluster(c.field('grpcService'))] },
+  // Zipkin and Datadog name a cluster outright rather than wrapping it in a GrpcService.
+  { type: 'ZipkinConfig', read: (c) => [c.strAt('collectorCluster')] },
+  { type: 'DatadogConfig', read: (c) => [c.strAt('collectorCluster')] },
+]
+
+/**
+ * Every cluster an extension's `typed_config` names, and nothing else about it.
+ *
+ * The node is acknowledged either way. That is the point of doing this at all: reading one
+ * field out of `ext_authz` is not the same as having an opinion about `ext_authz`, and the
+ * block goes on being reported as read-but-not-checked exactly as it did before. What
+ * changes is that the cluster it calls stops looking unreachable.
+ */
+function serviceClusters(typed: Cursor | undefined, by: string | undefined): ClusterRef[] {
+  if (!typed) return []
+  const type = typed.strAt('@type') ?? ''
+  const entry = CLUSTER_NAMING_EXTENSIONS.find((e) => type.includes(e.type))
+
+  const found = entry ? entry.read(typed) : []
+  typed.acknowledge()
+
+  return found
+    .filter((cluster): cluster is string => cluster !== undefined && cluster !== '')
+    .map((cluster) => ({ ...sourced(typed), cluster, by: by ?? type }))
+}
+
+/**
+ * `tcp_proxy`, read for the one thing it decides: which upstream the bytes go to.
+ *
+ * Everything else on it — idle timeouts, tunnelling, its own access logs — is acknowledged
+ * in one go rather than reported field by field, the same treatment any other filter's
+ * configuration gets. The cluster is the exception because it is not filter configuration at
+ * all, it is the routing.
+ */
+function tcpProxy(c: Cursor): TcpProxy {
+  const weighted = c.field('weightedClusters')
+  const clusters: WeightedCluster[] = (weighted?.field('clusters')?.items() ?? []).map((w) => ({
+    name: w.strAt('name') ?? '',
+    weight: w.numAt('weight'),
+  }))
+
+  const proxy = {
+    ...sourced(c),
+    statPrefix: c.strAt('statPrefix'),
+    cluster: c.strAt('cluster'),
+    weightedClusters: clusters,
+  }
+  if (c.hasUnread()) c.acknowledge()
+  return proxy
 }
 
 // ---- addresses ------------------------------------------------------------------
@@ -445,6 +554,34 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
   // reading like the general case, and `http2_protocol_options` is the other one. They are
   // read here as three, and flattened where the model is read, because a caller asking
   // "what is the idle timeout" should not have to know which box Envoy filed it in.
+  // The three places a connection manager reaches a cluster that is not a route: its HTTP
+  // filters, its access loggers, and its tracing provider. Each is read for that one field
+  // and then acknowledged exactly as it was before — the logger's `filter`, the tracing
+  // provider's sampling, the authorization filter's rules are all still nobody's business
+  // here. See `serviceClusters` for why reading one field is not the same as judging the
+  // extension around it.
+  const filters = c.field('httpFilters')?.items() ?? []
+  const logs = c.field('accessLog')?.items() ?? []
+  const tracing = c.field('tracing')
+  const provider = tracing?.field('provider')
+
+  const service: ClusterRef[] = [
+    ...filters.flatMap((f) => serviceClusters(f.field('typedConfig'), f.strAt('name'))),
+    ...logs.flatMap((log) => {
+      // The logger's `filter` decides which requests produce a line. Real configuration,
+      // and not something this can check.
+      log.field('filter')?.acknowledge()
+      return serviceClusters(log.field('typedConfig'), log.strAt('name'))
+    }),
+    ...serviceClusters(provider?.field('typedConfig'), provider?.strAt('name') ?? 'tracing'),
+  ]
+  // The provider's `name` is read for the same reason a filter's is — it says WHICH tracer,
+  // which is most of what anybody wants from a tracing block at a glance — and reading it is
+  // also what stops it arriving as a field nobody recognised. Whatever else either node
+  // carries is sampling and tags, which is configuration and not a routing fact.
+  if (provider?.hasUnread()) provider.acknowledge()
+  if (tracing?.hasUnread()) tracing.acknowledge()
+
   const common = c.field('commonHttpProtocolOptions')
   const http1 = c.field('httpProtocolOptions')
   const http2 = c.field('http2ProtocolOptions')
@@ -456,15 +593,7 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
     codecType: c.field('codecType')?.enumOf(CODEC_TYPES),
     routeConfig: inline ? routeConfig(inline) : undefined,
     rdsRouteConfigName: rds?.strAt('routeConfigName'),
-    httpFilters: (c.field('httpFilters')?.items() ?? [])
-      .map((f) => {
-        // The filter's own config is not modelled — this package does not evaluate http
-        // filters — but the names are worth having: a routing question is often really a
-        // question about which filter short-circuited the request before routing happened.
-        f.field('typedConfig')?.unmodelled()
-        return f.strAt('name')
-      })
-      .filter((n): n is string => n !== undefined),
+    httpFilters: filters.map((f) => f.strAt('name')).filter((n): n is string => n !== undefined),
     useRemoteAddress: c.field('useRemoteAddress')?.bool(),
     addUserAgent: c.field('addUserAgent')?.bool(),
     idleTimeout: common?.strAt('idleTimeout'),
@@ -487,18 +616,8 @@ function httpConnectionManager(c: Cursor): HttpConnectionManager {
       initialConnectionWindowSize: http2.numAt('initialConnectionWindowSize'),
     },
     internalAddress: internal && internalAddressConfig(internal),
-    accessLogNames: (c.field('accessLog')?.items() ?? [])
-      .map((log) => {
-        // The logger's own config says where the lines go and in what format, and its
-        // `filter` decides which requests produce one. Both are real configuration and
-        // neither is something this can check, so each is acknowledged rather than picked
-        // apart. The name is the useful half: "there is an access log here, and it is the
-        // file one" answers most of what anybody asks of it from a config alone.
-        log.field('typedConfig')?.acknowledge()
-        log.field('filter')?.acknowledge()
-        return log.strAt('name')
-      })
-      .filter((n): n is string => n !== undefined),
+    accessLogNames: logs.map((log) => log.strAt('name')).filter((n): n is string => n !== undefined),
+    serviceClusters: service,
     upgrades: (c.field('upgradeConfigs')?.items() ?? [])
       .map((upgrade): UpgradeConfig | undefined => {
         // An upgrade config can carry its own filter chain, run for upgraded streams only.
@@ -628,9 +747,12 @@ function tlsContext(socket: Cursor): TlsContext | undefined {
   }
 }
 
+const TCP_PROXY_NAMES = new Set(['envoy.filters.network.tcp_proxy', 'envoy.tcp_proxy'])
+
 function filterChain(c: Cursor): FilterChain {
   const filterNames: string[] = []
   let hcm: HttpConnectionManager | undefined
+  let tcp: TcpProxy | undefined
 
   for (const filter of c.field('filters')?.items() ?? []) {
     const name = filter.strAt('name')
@@ -642,8 +764,14 @@ function filterChain(c: Cursor): FilterChain {
     const type = typed.strAt('@type') ?? ''
     if ((name !== undefined && HCM_NAMES.has(name)) || type.includes('HttpConnectionManager')) {
       hcm = httpConnectionManager(typed)
+    } else if ((name !== undefined && TCP_PROXY_NAMES.has(name)) || type.includes('TcpProxy')) {
+      // The other kind of chain, and the one that used to go nowhere. A `tcp_proxy` names
+      // its upstream directly — there is no route table between the chain and the cluster —
+      // so not reading it left the whole listener terminating in a filter nobody had looked
+      // inside, with its cluster reported as one nothing routes to.
+      tcp = tcpProxy(typed)
     } else {
-      // Read enough to know it is not an HCM, then stop — one finding naming this filter,
+      // Read enough to know it is neither, then stop — one finding naming this filter,
       // rather than one per field of a config nobody asked about.
       typed.unmodelled()
     }
@@ -657,6 +785,7 @@ function filterChain(c: Cursor): FilterChain {
     name: c.strAt('name'),
     match: match ? filterChainMatch(match) : undefined,
     hcm,
+    tcpProxy: tcp,
     filterNames,
     tls: socket ? tlsContext(socket) : undefined,
   }

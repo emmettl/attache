@@ -39,6 +39,8 @@ export type Outcome =
   | 'matched'
   | 'no-listener'
   | 'no-filter-chain'
+  /** The chain forwards the connection to an upstream without reading HTTP at all. */
+  | 'tcp-proxy'
   | 'not-http'
   | 'routes-elsewhere'
   | 'no-virtual-host'
@@ -531,6 +533,42 @@ export function matchRequest(model: ConfigModel, request: TestRequest): MatchRes
     listenerAttempts,
     filterChain: chain.chosen,
     chainAttempts: chain.attempts,
+  }
+
+  /**
+   * A `tcp_proxy` chain, which answers the question without any of the machinery below.
+   *
+   * There is no route table here: the chain names its upstream and every byte goes there.
+   * That makes this the shortest true answer the tester ever gives, and until `tcp_proxy` was
+   * modelled it could not give it at all — a connection to a TCP listener came back as "no
+   * HTTP connection manager, so there are no routes to match", which is accurate about what
+   * was not found and silent about the upstream sitting in the config.
+   */
+  const tcp = chain.chosen.tcpProxy
+  if (tcp) {
+    const weighted = tcp.weightedClusters
+    const cluster = tcp.cluster ?? (weighted.length === 1 ? weighted[0]!.name : undefined)
+
+    const destination =
+      cluster !== undefined
+        ? `cluster \`${cluster}\``
+        : weighted.length > 0
+          ? `${weighted.map((w) => `\`${w.name}\`${w.weight === undefined ? '' : ` (${w.weight})`}`).join(' or ')}, by weight`
+          : 'an upstream it does not name'
+
+    return {
+      ...empty('tcp-proxy', `Matched a TCP proxy chain, which forwards the whole connection to ${destination}.`, { cluster }),
+      ...base,
+      // Pushed onto the accumulated list rather than passed to `empty`, because `base`
+      // carries the caveats chain selection already produced and spreading it afterwards
+      // would drop anything handed in. The form asks for a path, a method and headers
+      // because most listeners are HTTP; none of them reach a tcp_proxy, and somebody who
+      // has just filled all three in deserves to be told so rather than left to infer it.
+      caveats: [
+        ...caveats,
+        'This chain does not read HTTP, so the path, method and headers played no part in this answer — only the port and the SNI, which chose the chain.',
+      ],
+    }
   }
 
   const hcm = chain.chosen.hcm
