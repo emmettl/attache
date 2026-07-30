@@ -22,13 +22,30 @@ export function App() {
   const summary = useStore((s) => s.analysis.summary)
   const format = useStore((s) => s.analysis.format)
   const loadInitial = useStore((s) => s.loadInitial)
+  const loadShared = useStore((s) => s.loadShared)
   const split = useStore((s) => s.split)
   const setSplit = useStore((s) => s.setSplit)
   const remember = useStore((s) => s.remember)
 
   useEffect(() => {
     void loadInitial()
-  }, [loadInitial])
+
+    /**
+     * A share link that arrives while the app is already open.
+     *
+     * Pasting one into the address bar of a tab that is already on Attaché changes only the
+     * fragment, and a fragment-only navigation does not reload the document — so the mount
+     * effect above never runs a second time. What the recipient saw was their own previous
+     * config, unchanged, with the sender's link sitting in the address bar looking like it
+     * had been ignored. Which it had.
+     *
+     * `hashchange` is not fired by the `replaceState` that `takeFromUrl` uses to clear the
+     * fragment, so consuming a link cannot re-trigger this.
+     */
+    const onHashChange = () => void loadShared()
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [loadInitial, loadShared])
 
   return (
     <div className="app">

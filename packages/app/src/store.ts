@@ -124,6 +124,15 @@ interface State {
   share: (text: string) => Promise<void>
   clearShare: () => void
   loadInitial: () => Promise<void>
+  /**
+   * Take a config out of the URL if there is one, and do nothing at all if there is not.
+   *
+   * Deliberately narrower than `loadInitial`, which falls through to the stored copy when
+   * the URL carries nothing. That fall-through is right at start-up and wrong afterwards:
+   * on a fragment that is not one of ours it would replace whatever the user is in the
+   * middle of writing with their last saved version.
+   */
+  loadShared: () => Promise<boolean>
 }
 
 /** `name: value` per line. Blank lines and lines without a colon are skipped. */
@@ -344,15 +353,20 @@ export const useStore = create<State>((set, get) => ({
     set({ shareLink: null })
   },
 
-  async loadInitial() {
+  async loadShared() {
     // A shared link wins over the last session: somebody who followed a link meant to see
     // what was in it, and silently showing them their own previous config instead would be
     // the most confusing thing this app could do.
     const shared = await takeFromUrl()
-    if (shared !== null) {
-      set({ ...load(shared) })
-      return
-    }
+    if (shared === null) return false
+    set({ ...load(shared), match: null, shareLink: null, highlight: null, mask: null })
+    return true
+  },
+
+  async loadInitial() {
+    // Reported rather than inferred from the text changing: a link carrying exactly what is
+    // already in the editor did load, and would otherwise fall through to the stored copy.
+    if (await get().loadShared()) return
 
     // Asked not to remember, so nothing is restored — even if an entry survived from
     // another tab that was still running under the old setting when this one changed it.
