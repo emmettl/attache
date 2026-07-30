@@ -24,6 +24,7 @@ export function App() {
   const loadInitial = useStore((s) => s.loadInitial)
   const split = useStore((s) => s.split)
   const setSplit = useStore((s) => s.setSplit)
+  const remember = useStore((s) => s.remember)
 
   useEffect(() => {
     void loadInitial()
@@ -94,10 +95,16 @@ export function App() {
         </section>
       </div>
 
+      {/* The claim about uploading is unconditional and stays that way. What used to be sold
+          alongside it — that a reload brings your config back — is a property somebody may
+          not want, so it now reports which way the setting is set instead of promising one
+          of them. */}
       <footer className="bar foot">
         <span>
-          Everything happens in this tab. Nothing is uploaded — reload and your config is still
-          here, because it never left.
+          Everything happens in this tab. Nothing is uploaded.{' '}
+          {remember
+            ? 'This config is kept in this browser until you clear it.'
+            : 'This config is not remembered — it goes when you close the tab.'}
         </span>
         <span className="chars">{text.length.toLocaleString()} characters</span>
       </footer>
@@ -198,13 +205,20 @@ async function drop(event: React.DragEvent, setText: (text: string) => void) {
 }
 
 /**
- * Load, save and share.
+ * Load, save, share, and get rid of.
  *
  * Sharing is the one that needs a gate. A URL fragment never reaches a server, which is the
  * usual argument for putting a document in one — but a link goes to a person, and an Envoy
  * bootstrap carries a TLS private key more often than not. So the config goes through the
  * core's redactor first, and if it finds key material the link is not made until the user
  * has seen what would have travelled and chosen to strip it.
+ *
+ * Clearing needs a gate of its own, for the opposite reason. Attaché keeps no copy anywhere
+ * else — that is the whole argument of this app — so a config that has not been downloaded
+ * is genuinely gone, and a one-click destroy sitting next to Download is a trap. The same
+ * `.dialogue` as the share flow rather than `window.confirm`, which cannot be styled, blocks
+ * the page, and looks like something the browser is telling you rather than something this
+ * app is asking.
  */
 function Actions() {
   const text = useStore((s) => s.text)
@@ -212,7 +226,11 @@ function Actions() {
   const share = useStore((s) => s.share)
   const shareLink = useStore((s) => s.shareLink)
   const clearShare = useStore((s) => s.clearShare)
+  const clearConfig = useStore((s) => s.clearConfig)
+  const remember = useStore((s) => s.remember)
+  const setRemember = useStore((s) => s.setRemember)
   const [pendingSecrets, setPendingSecrets] = useState<string | null>(null)
+  const [pendingClear, setPendingClear] = useState(false)
 
   const onShare = () => {
     const secrets = findSecrets(text)
@@ -228,6 +246,47 @@ function Actions() {
       <button onClick={() => void openFile(setText)}>Open file</button>
       <button onClick={() => download(text)}>Download</button>
       <button onClick={onShare}>Share link</button>
+      <button onClick={() => setPendingClear(true)}>Clear</button>
+
+      {/* It says which way it is set rather than what pressing it would do. A button
+          labelled "Remember" is ambiguous about whether that is the state or the offer, and
+          this is a privacy setting — the one kind where a user guessing wrong is a real
+          cost. The engaged state is the non-default one, so that is the one that is
+          coloured. */}
+      <button
+        className="remember"
+        aria-pressed={remember}
+        onClick={() => setRemember(!remember)}
+        title={
+          remember
+            ? 'This config is saved in this browser and comes back on reload. Click to stop.'
+            : 'This config is not saved anywhere and goes when the tab closes. Click to keep it.'
+        }
+      >
+        {remember ? 'Remembering' : 'Not remembering'}
+      </button>
+
+      {pendingClear && (
+        <div className="dialogue" role="alertdialog">
+          <p>Clear this config?</p>
+          <p className="muted">
+            The editor goes back to the example and the copy kept in this browser is deleted.
+            Attaché has no other copy — that is rather the point of it — so if you have not
+            downloaded this config, it is gone.
+          </p>
+          <div className="dialogue-actions">
+            <button
+              onClick={() => {
+                setPendingClear(false)
+                clearConfig()
+              }}
+            >
+              Clear it
+            </button>
+            <button onClick={() => setPendingClear(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {pendingSecrets && (
         <div className="dialogue" role="alertdialog">

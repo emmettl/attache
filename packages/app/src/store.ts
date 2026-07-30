@@ -14,6 +14,14 @@ import { linkTo, takeFromUrl } from './hash.js'
 
 const STORAGE_KEY = 'attache.config.v1'
 const SPLIT_KEY = 'attache.split.v1'
+/**
+ * Whether to keep the config across reloads at all.
+ *
+ * Its own key, deliberately not stored inside anything that gets wiped: somebody who has
+ * turned remembering off wants it to STAY off, and a preference that lives in the thing it
+ * protects would be deleted by the first thing it did.
+ */
+const REMEMBER_KEY = 'attache.remember.v1'
 
 /** The share of the width the source pane takes. Its own key, so a bad config cannot lose it. */
 export const DEFAULT_SPLIT = 0.5
@@ -90,9 +98,13 @@ interface State {
   shareLink: string | null
   /** How much of the workspace width the source pane gets, between MIN_SPLIT and MAX_SPLIT. */
   split: number
+  /** Whether the config survives a reload. On by default, and the user can turn it off. */
+  remember: boolean
 
   setText: (text: string) => void
   setSplit: (fraction: number) => void
+  setRemember: (remember: boolean) => void
+  clearConfig: () => void
   setTab: (tab: Tab) => void
   revealLine: (line: number) => void
   setHighlight: (block: LineRange | null) => void
@@ -163,12 +175,44 @@ function autosave(text: string): void {
   clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, text)
+      // The bundled example is not anybody's work, and storing it is what made Clear a lie
+      // the first time. Clearing loads the example into the editor, the editor reports that
+      // like any other edit, and four hundred milliseconds later the entry the button had
+      // just deleted was back — holding a config nobody had typed. Nothing is lost by
+      // declining to remember what ships with the app.
+      if (text === DEFAULT_EXAMPLE.text) localStorage.removeItem(STORAGE_KEY)
+      else localStorage.setItem(STORAGE_KEY, text)
     } catch {
       // Full, or unavailable in a private context. Losing the autosave is survivable;
       // throwing here would take out the keystroke that happened to fill the quota.
     }
   }, 400)
+}
+
+/**
+ * Take the stored config out of this browser, and stop the one in flight.
+ *
+ * Cancelling the pending timer is not tidiness. `setText` schedules a write four hundred
+ * milliseconds out, so clearing without cancelling removes the entry and then writes it
+ * straight back — a Clear button that does nothing a third of a second later is worse than
+ * no Clear button, because the user has been told it worked.
+ */
+function forget(): void {
+  clearTimeout(saveTimer)
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    // Unavailable, which means there was nothing stored to begin with.
+  }
+}
+
+/** Remembering is the default, so anything other than an explicit `off` means yes. */
+function loadRemember(): boolean {
+  try {
+    return localStorage.getItem(REMEMBER_KEY) !== 'off'
+  } catch {
+    return true
+  }
 }
 
 /** As above, and for the same reason: a drag is a hundred writes if you let it be. */
@@ -193,6 +237,37 @@ export const useStore = create<State>((set, get) => ({
   match: null,
   shareLink: null,
   split: loadSplit(),
+  remember: loadRemember(),
+
+  /**
+   * Turn remembering on or off.
+   *
+   * Turning it off deletes what is already stored, immediately. A setting that only governs
+   * FUTURE writes would leave the last session's config sitting in the browser for as long
+   * as nobody typed — which is exactly the config somebody reaching for this switch is
+   * trying to be rid of, and they would have every reason to believe it was gone.
+   */
+  setRemember(remember) {
+    set({ remember })
+    try {
+      localStorage.setItem(REMEMBER_KEY, remember ? 'on' : 'off')
+    } catch {
+      // The choice will not survive a reload, but it holds for this session.
+    }
+    if (!remember) forget()
+  },
+
+  /**
+   * Back to the example, and take the stored copy with it.
+   *
+   * Both halves or neither. Clearing only the editor leaves the config in localStorage, so a
+   * reload brings it straight back and the button was a lie — and it is the stored copy,
+   * not the visible one, that is the reason somebody presses this.
+   */
+  clearConfig() {
+    set({ ...load(DEFAULT_EXAMPLE.text), match: null, shareLink: null, highlight: null, mask: null })
+    forget()
+  },
 
   setSplit(fraction) {
     const split = clampSplit(fraction)
@@ -201,7 +276,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setText(text) {
-    autosave(text)
+    if (get().remember) autosave(text)
     // A new config invalidates the old answer rather than leaving it there looking current.
     // The highlight goes too: it is a line range into text that no longer exists, and a
     // band left hanging over unrelated lines is worse than no band. The mask goes for the
@@ -253,6 +328,13 @@ export const useStore = create<State>((set, get) => ({
     const shared = await takeFromUrl()
     if (shared !== null) {
       set({ ...load(shared) })
+      return
+    }
+
+    // Asked not to remember, so nothing is restored — even if an entry survived from
+    // another tab that was still running under the old setting when this one changed it.
+    if (!get().remember) {
+      forget()
       return
     }
 

@@ -179,6 +179,19 @@ code {
   position: relative;
 }
 
+/* Not remembering is the state worth colouring: it is the one somebody chose, and the one
+   they would want to confirm at a glance before pasting a production bootstrap in. Sized to
+   the longer of its two labels so the row does not shuffle when it is pressed. */
+.actions > button.remember {
+  min-width: 9.2rem;
+}
+
+.actions > button.remember[aria-pressed='false'] {
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+  color: var(--ok);
+  font-weight: 600;
+}
+
 .actions > button,
 .examples button {
   padding: 0.3rem 0.7rem;
