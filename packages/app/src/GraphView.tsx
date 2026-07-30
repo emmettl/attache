@@ -1,6 +1,6 @@
 import { docsForKind } from '@attache/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { NODE_H, NODE_W, layoutGraph, searchGraph } from './graphLayout.js'
+import { NODE_H, NODE_W, layoutGraph, nodeAtLine, searchGraph } from './graphLayout.js'
 import { useStore, type LineRange } from './store.js'
 
 // The config drawn as a graph, with the edges actually drawn.
@@ -67,34 +67,15 @@ export function GraphView() {
   /**
    * The node the caret is sitting in, while the editor has focus.
    *
-   * SMALLEST span wins, because node ranges nest: a caret on a route's line is inside that
-   * route, its virtual host, its route config, its filter chain and its listener all at
-   * once, and the only one of those five that tells you anything you did not already know
-   * from looking at the line is the innermost.
-   *
-   * Dangling placeholders are excluded for the same reason `maskRanges` below excludes them:
-   * their range is BORROWED from whatever referred to them, so a missing cluster carries the
-   * range of the route that named it. Left in, it would tie with that route on span and
-   * could win — putting the caret on a route and marking a cluster that does not exist.
-   *
-   * Drawn from `layout.nodes` rather than `graph.nodes` so that a node the search or the
-   * endpoint toggle has taken off the canvas cannot be the answer. Marking something that
-   * is not on screen is the same as marking nothing, except that it also stops the search
-   * from being believed.
+   * The rule itself is `nodeAtLine` in `graphLayout.ts` — a question about the graph rather
+   * than about the drawing, and testable there without a DOM. Candidates come from
+   * `layout.nodes` rather than `graph.nodes` so that a node the search or the endpoint
+   * toggle has taken off the canvas cannot be the answer: marking something that is not on
+   * screen is the same as marking nothing, except that it also stops the search from being
+   * believed.
    */
   const caretLine = useStore((s) => s.caretLine)
-  const atCaret = useMemo(() => {
-    if (caretLine === null) return null
-    let best: (typeof layout.nodes)[number] | undefined
-    for (const node of layout.nodes) {
-      if (node.problem === 'dangling') continue
-      if (caretLine < node.range.line || caretLine > node.range.endLine) continue
-      if (best === undefined || node.range.endLine - node.range.line < best.range.endLine - best.range.line) {
-        best = node
-      }
-    }
-    return best?.id ?? null
-  }, [caretLine, layout.nodes])
+  const atCaret = useMemo(() => nodeAtLine(layout.nodes, caretLine), [caretLine, layout.nodes])
 
   /**
    * Hover previews, selection persists, the caret answers when neither does — one rule for

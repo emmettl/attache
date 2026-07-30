@@ -1,6 +1,6 @@
 import { analyse, buildGraph } from '@attache/core'
 import { describe, expect, test } from 'vitest'
-import { GAP_Y, NODE_H, NODE_W, layoutGraph, searchGraph } from './graphLayout.js'
+import { GAP_Y, NODE_H, NODE_W, layoutGraph, nodeAtLine, searchGraph } from './graphLayout.js'
 
 const graphOf = (text: string) => buildGraph(analyse(text).model)
 
@@ -308,5 +308,97 @@ static_resources:
     expect(y('first')).toBeLessThan(y('second'))
     expect(y('alpha')).toBeLessThan(y('beta'))
     expect(y('va')).toBeLessThan(y('vb'))
+  })
+})
+
+describe('the node a line sits in', () => {
+  // Three fields is all the rule reads, so the cases can state the geometry outright rather
+  // than being read out of a config and hoped about.
+  const at = (line: number | null, nodes: { id: string; from: number; to: number; problem?: 'dangling' | 'orphan' }[]) =>
+    nodeAtLine(
+      nodes.map((n) => ({
+        id: n.id,
+        range: { start: 0, end: 0, column: 1, line: n.from, endLine: n.to },
+        problem: n.problem,
+      })),
+      line,
+    )
+
+  // What a real config looks like to this: every one of these contains line 20.
+  const NESTED = [
+    { id: 'listener', from: 3, to: 40 },
+    { id: 'chain', from: 8, to: 34 },
+    { id: 'routeConfig', from: 13, to: 30 },
+    { id: 'vhost', from: 16, to: 28 },
+    { id: 'route', from: 19, to: 20 },
+  ]
+
+  test('the innermost one wins', () => {
+    // The only one of the five that says anything the line itself did not.
+    expect(at(20, NESTED)).toBe('route')
+  })
+
+  test('and the innermost is whichever it really is, at other depths', () => {
+    expect(at(21, NESTED)).toBe('vhost')
+    expect(at(29, NESTED)).toBe('routeConfig')
+    expect(at(33, NESTED)).toBe('chain')
+    expect(at(5, NESTED)).toBe('listener')
+  })
+
+  test('a line no node covers marks nothing', () => {
+    expect(at(1, NESTED)).toBeNull()
+    expect(at(41, NESTED)).toBeNull()
+  })
+
+  test('no caret marks nothing', () => {
+    // Null is "the editor does not have focus", which is different from "the caret is on a
+    // line nothing covers" only in where it comes from — both mark nothing.
+    expect(at(null, NESTED)).toBeNull()
+  })
+
+  test('the range is inclusive at both ends', () => {
+    expect(at(19, [{ id: 'route', from: 19, to: 20 }])).toBe('route')
+    expect(at(20, [{ id: 'route', from: 19, to: 20 }])).toBe('route')
+    expect(at(18, [{ id: 'route', from: 19, to: 20 }])).toBeNull()
+    expect(at(21, [{ id: 'route', from: 19, to: 20 }])).toBeNull()
+  })
+
+  test('a dangling placeholder never wins, however tight its range', () => {
+    // Its range is BORROWED from whatever referred to it, so a missing cluster carries the
+    // range of the route that named it — it ties on span and would win on a later-wins rule,
+    // marking a cluster the config does not contain while the caret sits on a route.
+    expect(
+      at(20, [
+        { id: 'route', from: 19, to: 20 },
+        { id: 'missing:api', from: 19, to: 20, problem: 'dangling' },
+      ]),
+    ).toBe('route')
+    // And with nothing else to choose, it still declines rather than reaching for it.
+    expect(at(20, [{ id: 'missing:api', from: 19, to: 20, problem: 'dangling' }])).toBeNull()
+  })
+
+  test('an orphan is a real node and can win', () => {
+    // `orphan` says nothing routes here, not that it has no source of its own — unlike
+    // `dangling`, it owns the lines it points at.
+    expect(at(50, [{ id: 'cluster', from: 48, to: 52, problem: 'orphan' }])).toBe('cluster')
+  })
+
+  test('identical ranges go to the first, which is source order', () => {
+    // A parent and an only child spanning the same lines. `buildGraph` emits the parent
+    // first, and a rule that preferred the last would swap them for no stated reason.
+    expect(
+      at(7, [
+        { id: 'parent', from: 6, to: 9 },
+        { id: 'child', from: 6, to: 9 },
+      ]),
+    ).toBe('parent')
+  })
+
+  test('it works against a real config, not only against hand-written ranges', () => {
+    const graph = graphOf(FRONT_PROXY)
+    const route = graph.nodes.find((n) => n.kind === 'route')!
+    expect(nodeAtLine(graph.nodes, route.range.line)).toBe(route.id)
+    // A line above `static_resources` belongs to no node at all.
+    expect(nodeAtLine(graph.nodes, 1)).toBeNull()
   })
 })
