@@ -409,6 +409,19 @@ code {
   font-weight: 600;
 }
 
+/*
+  The tabpanel wrapper. It exists so the panel can be named and associated with its tab, and
+  it inherits the sizing the pane used to give `.panel-body` directly — without this the
+  wrapper becomes the flex child, `.panel-body` stops being one, and the results pane loses
+  its scroll.
+*/
+.panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .panel-body {
   flex: 1;
   overflow: auto;
