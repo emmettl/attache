@@ -1,0 +1,57 @@
+{
+  "name": "@attache/cli",
+  "version": "0.4.0",
+  "description": "Check an Envoy config from the command line. Findings that point at a line, in a form CI can read — no Envoy binary, no network, any platform Node runs on.",
+  "keywords": [
+    "envoy",
+    "envoyproxy",
+    "xds",
+    "config",
+    "validation",
+    "lint",
+    "ci",
+    "sarif",
+    "route-matching",
+    "service-mesh"
+  ],
+  "license": "MIT",
+  "author": "Louis Emmett",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emmettl/attache.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://emmettl.github.io/attache/",
+  "type": "module",
+  "//publishConfig": "Scoped packages are RESTRICTED by default, and restricted publishing needs a paid npm plan — so without this the first release fails with a 402 that no dry run catches, because --dry-run never makes the access check. Set here rather than passed as --access public on the command line so that publishing by hand from a laptop cannot differ from publishing from CI.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "//bin": "The same command name as @attache/app, and that is not an oversight. They are two halves of one tool — `npx @attache/app` opens the workbench, `npx @attache/cli check` is the same checks without a browser — and both spellings naming `attache` is what makes that read as one tool rather than two products. npx names the package explicitly, so the only case where it matters is installing both globally, where the later install wins.",
+  "bin": {
+    "attache": "./bin/attache.js"
+  },
+  "//engines": "A floor, not a support statement. CI builds and tests on 24.",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "//dependencies": "Unlike @attache/app, which ships a prebuilt bundle and therefore needs nothing at runtime, this resolves its one dependency the ordinary way. The tree is @attache/core and its `yaml` — two small packages — so `npx @attache/cli` is still a fast cold start, and the alternative would mean bundling a copy of the core into a package whose whole purpose is to be the same checks the app runs.",
+  "dependencies": {
+    "@attache/core": "0.4.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "typescript": "~7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

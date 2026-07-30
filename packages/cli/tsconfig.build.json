@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+
+    "target": "es2023",
+    // No DOM, for the same reason the core leaves it out — and here it is nearly tautological:
+    // this runs in a terminal. `node` is in `types` because it genuinely needs the filesystem
+    // and the process, which is the one thing the core is not allowed to reach for.
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "module": "esnext",
+
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+
+    // No `paths` here, unlike the app — see tsconfig.json, which adds one. This config
+    // EMITS, and mapping `@attache/core` to its source would pull the core's files into the
+    // program, where `rootDir` correctly refuses them. So the build resolves the core the
+    // ordinary way, through node_modules to its built `dist`, which is there because the
+    // core is a dependency and therefore builds first.
+
+    // Nothing imports this package as a library — it is a command — so there are no
+    // declarations to ship. The source map stays, because a stack trace out of a CI run is
+    // the one place this code is read under pressure.
+    "declaration": false,
+    "sourceMap": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

@@ -63,7 +63,7 @@ jobs:
       - run: npm run build
 
       # Guards against the commonest release mistake: cutting v0.2.0 having forgotten to
-      # bump either package, and silently republishing — or failing to publish — 0.1.0.
+      # bump any package, and silently republishing — or failing to publish — 0.1.0.
       # Deliberately not a lockstep requirement: the packages version independently, so
       # this only asks that the tag matches SOMETHING.
       - name: Check the release tag matches a package version
@@ -71,10 +71,11 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           CORE=$(node -p "require('./packages/core/package.json').version")
+          CLI=$(node -p "require('./packages/cli/package.json').version")
           APP=$(node -p "require('./packages/app/package.json').version")
-          echo "tag=$TAG core=$CORE app=$APP"
-          if [ "$TAG" != "$CORE" ] && [ "$TAG" != "$APP" ]; then
-            echo "::error::Release tag $GITHUB_REF_NAME matches neither @attache/core ($CORE) nor @attache/app ($APP). Bump a package, or retag."
+          echo "tag=$TAG core=$CORE cli=$CLI app=$APP"
+          if [ "$TAG" != "$CORE" ] && [ "$TAG" != "$CLI" ] && [ "$TAG" != "$APP" ]; then
+            echo "::error::Release tag $GITHUB_REF_NAME matches none of @attache/core ($CORE), @attache/cli ($CLI) or @attache/app ($APP). Bump a package, or retag."
             exit 1
           fi
 
@@ -93,8 +94,8 @@ jobs:
       # brand-new package has to be pushed with a credential, and every version after it
       # can be OIDC.
       #
-      # AFTER THE FIRST RELEASE: configure the trusted publisher on npmjs.com for both
-      # packages, then DELETE the NPM_TOKEN secret. Deleting it is the whole switch. Do not
+      # AFTER THE FIRST RELEASE: configure the trusted publisher on npmjs.com for every
+      # package, then DELETE the NPM_TOKEN secret. Deleting it is the whole switch. Do not
       # leave it sitting there once trusted publishing is on — npm prefers an explicit
       # token over OIDC, so the day that token expires or is revoked it stops being
       # redundant and starts being the reason a release returns 401.
@@ -121,13 +122,13 @@ jobs:
 
           published_any=0
 
-          for pkg in core app; do
+          for pkg in core cli app; do
             name=$(node -p "require('./packages/$pkg/package.json').name")
             version=$(node -p "require('./packages/$pkg/package.json').version")
 
-            # Already on the registry? Skip rather than fail. Both packages are released
+            # Already on the registry? Skip rather than fail. The packages are released
             # together but version independently, so a release that only touches the core
-            # will find the app unchanged — and that is not an error.
+            # will find the others unchanged — and that is not an error.
             if npm view "$name@$version" version > /dev/null 2>&1; then
               echo "::notice::$name@$version is already published — skipping"
               echo "- \`$name@$version\` — already published, skipped" >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import { CONFIG_DUMP, FRONT_PROXY, PRODUCTION, TROUBLE } from './fixtures.js'
 import { analyse } from './index.js'
 import { describeSecrets, findSecrets, redact } from './redact.js'
 
@@ -78,11 +79,144 @@ describe('redacting', () => {
 
   test('a config with no secrets is returned unchanged', () => {
     const plain = 'static_resources: { clusters: [{ name: a }] }'
-    expect(redact(plain)).toEqual({ text: plain, removed: [] })
+    expect(redact(plain)).toEqual({ text: plain, removed: [], complete: true })
   })
 })
 
 test('the warning says what was found and where', () => {
   expect(describeSecrets(findSecrets(WITH_KEY))).toContain('a TLS private key')
   expect(describeSecrets([])).toBe('No key material found.')
+})
+
+// Configs the redactor used to hand back with the key still in them.
+//
+// Every one of these was silent: the config parsed, the share dialogue never appeared
+// because `findSecrets` returned nothing, and the link looked exactly like a clean one.
+// That is the worst shape a bug in this file can take, so each has a test that asserts on
+// the OUTPUT rather than on the finding — what matters is that the bytes are gone.
+describe('key material that used to travel', () => {
+  const leaks = (text: string) => redact(text).text.includes('SECRETSECRET')
+
+  test('a key reached through an alias', () => {
+    // An alias is neither map, sequence nor scalar, so the walk stepped over it and
+    // `scalarsUnder` came back empty. The anchor is what gets redacted, which is where the
+    // bytes are — and every alias pointing at it then resolves to `"REDACTED"`.
+    const text = `
+shared: &k
+  inline_string: "SECRETSECRET"
+static_resources:
+  listeners:
+  - transport_socket:
+      typed_config:
+        common_tls_context:
+          tls_certificates:
+          - private_key: *k
+`
+    expect(findSecrets(text)).toHaveLength(1)
+    expect(leaks(text)).toBe(false)
+    expect(analyse(redact(text).text).diagnostics.filter((d) => d.code === 'yaml-error')).toEqual([])
+  })
+
+  test('a key arriving through a merge key, spliced once and not twice', () => {
+    // Found twice — once at the anchor, once through the merge — naming one span of text.
+    // Splicing it twice would write over the first replacement's own characters.
+    const text = `
+defaults: &d
+  private_key: { inline_string: "SECRETSECRET" }
+static_resources:
+  listeners:
+  - transport_socket:
+      typed_config:
+        common_tls_context:
+          tls_certificates:
+          - <<: *d
+            certificate_chain: { inline_string: "cert" }
+`
+    const { text: out } = redact(text)
+    expect(out).not.toContain('SECRETSECRET')
+    expect(out.match(/"REDACTED"/g)).toHaveLength(1)
+    expect(out).toContain('certificate_chain: { inline_string: "cert" }')
+    expect(analyse(out).diagnostics.filter((d) => d.code === 'yaml-error')).toEqual([])
+  })
+
+  test('a key in a second YAML document', () => {
+    // The redactor's remit is the text that will travel, not the config that was modelled.
+    // Somebody pasting a pair of Kubernetes manifests shares both halves.
+    expect(
+      leaks(`
+static_resources:
+  clusters:
+  - name: a
+---
+static_resources:
+  listeners:
+  - transport_socket:
+      typed_config:
+        common_tls_context:
+          tls_certificates:
+          - private_key: { inline_string: "SECRETSECRET" }
+`),
+    ).toBe(false)
+  })
+
+  test.each([
+    ['a Redis downstream password', 'downstream_auth_password: { inline_string: "SECRETSECRET" }'],
+    ['a Redis upstream password', 'auth_password: { inline_string: "SECRETSECRET" }'],
+    ['a service account key', 'call_credentials: [{ service_account_jwt_access: { json_key: "SECRETSECRET" } }]'],
+    ['a gRPC access token', 'call_credentials: [{ access_token: "SECRETSECRET" }]'],
+    ['an inline htpasswd', 'users: { inline_string: "admin:SECRETSECRET" }'],
+    ['an AWS secret access key', 'secret_access_key: "SECRETSECRET"'],
+    ['an API key', 'api_key: "SECRETSECRET"'],
+  ])('%s', (_what, field) => {
+    expect(leaks(`static_resources:\n  clusters:\n  - name: c\n    ${field}\n`)).toBe(false)
+  })
+})
+
+describe('the redactor checking its own work', () => {
+  test('a clean pass reports itself complete', () => {
+    expect(redact(WITH_KEY).complete).toBe(true)
+    expect(redact('static_resources: { clusters: [{ name: a }] }').complete).toBe(true)
+  })
+
+  test('what it says it removed is genuinely gone', () => {
+    // The invariant the share gate rests on, asserted directly: after a redaction, a second
+    // scan of the result finds nothing. `complete` is that scan, and the app refuses to
+    // make a link when it comes back false.
+    const { text, complete } = redact(WITH_KEY)
+    expect(complete).toBe(true)
+    // Not "the scan comes back empty" — `private_key` is still a field called `private_key`
+    // after its value has gone. Every position it names holds the mask and nothing else.
+    for (const left of findSecrets(text)) {
+      expect(text.slice(left.range.start, left.range.end)).toBe('"REDACTED"')
+    }
+  })
+})
+
+describe('warnings that should not fire', () => {
+  test('an SDS reference is not treated as the secret it names', () => {
+    // `SdsSecretConfig` is a name and a place to fetch from. Offering to redact it broke the
+    // reference on every config that fetches its certificates rather than inlining them —
+    // and a warning that fires on things that are not secret is one people learn to click
+    // through, taking the real one with it.
+    expect(
+      findSecrets(`
+static_resources:
+  listeners:
+  - transport_socket:
+      typed_config:
+        common_tls_context:
+          tls_certificate_sds_secret_configs:
+          - name: server_cert
+            sds_config: { ads: {} }
+`),
+    ).toEqual([])
+  })
+
+  test('the fixtures and every shipped example are clean', () => {
+    // If any of these starts reporting key material, either a config gained some or the
+    // matching got broader than it should be. Both are worth failing a build over.
+    for (const config of [FRONT_PROXY, PRODUCTION, TROUBLE, CONFIG_DUMP]) {
+      expect(findSecrets(config)).toEqual([])
+    }
+  })
 })

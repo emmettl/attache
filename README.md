@@ -106,16 +106,51 @@ for key material first and will not produce a link until it has been replaced wi
 re-serialising, so comments, quoting and indentation survive: what you send is still the
 file you recognise.
 
-## Two packages
+The scan follows anchors, and it reads every document in the file rather than the first.
+Both were leaks: `private_key: *shared` found nothing, because an alias is neither a map nor
+a sequence nor a scalar and the walk stepped straight over it — and a key in the second half
+of a `---`-separated paste was never looked at, because the *config* is one document while
+the *text that travels* is all of them. Neither failed loudly. The config parsed, the warning
+never appeared, and the link looked exactly like a clean one.
+
+Which is why the redactor now checks its own work: it re-scans the result and reports whether
+every position it found holds the mask, and the app refuses to make a link when that comes
+back false. This is the one place in the codebase where being quietly wrong costs somebody a
+private key rather than a wrong answer on a screen, so it is the one place that verifies
+instead of trusting.
+
+## Three packages
 
 | | |
 |---|---|
 | [`@attache/core`](packages/core) | Parse, model, check, graph and match. Pure TypeScript, no DOM — enforced by leaving `DOM` out of its `lib`. |
 | [`@attache/app`](packages/app) | The React UI, plus the `bin/` that makes `npx` work. |
+| [`@attache/cli`](packages/cli) | The same findings in a terminal, and in CI. |
 
-The split is the point: the core is data-in, data-out, so a CLI or a CI check could embed
-it without a browser. The app bundles it from source, so an edit hot-reloads and a stale
-`dist/` can never quietly serve old matching logic.
+The split is the point, and the CLI is what collects on it: the core is data-in, data-out,
+so the command is argument parsing, four output formats and an exit code over the identical
+`analyse()` the browser calls. The app bundles the core from source, so an edit hot-reloads
+and a stale `dist/` can never quietly serve old matching logic.
+
+## In CI
+
+```bash
+npx @attache/cli check envoy.yaml
+```
+
+Every finding at once, each pointing at a line, each saying why it matters. Under GitHub
+Actions it emits workflow commands by default, so they arrive as annotations on the diff
+with nothing to configure; `--format sarif` sends them to the Security tab instead, and
+`--format json` is a versioned shape for anything else.
+
+This does not replace `envoy --mode validate`, and [says so](packages/cli). That needs the
+Envoy binary, at a version matching production, built for the platform the job runs on, and
+it reports the first thing that stopped the boot. This needs Node, reports everything at
+once, and catches the whole relational class Envoy is perfectly happy with — the route that
+can never match, the cluster nothing reaches, the filter after the router.
+
+And it ends by saying how much of the config it checked, which is the part no validator
+tells you. There is no green tick in it either.
 
 ## Building it
 
