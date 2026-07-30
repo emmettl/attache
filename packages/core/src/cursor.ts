@@ -217,10 +217,17 @@ export class Cursor {
         .map((e) => `\`${e.raw}\``)
         .join(', ')
       this.ctx.diagnostics.push({
-        severity: 'error',
+        // A WARNING, not an error, and that distinction was earned the hard way. This
+        // shipped saying "Envoy will refuse the config", and the person who found it
+        // replied that the config in question is serving production traffic. Whether
+        // Envoy's proto JSON parser is lenient here, or that deployment renders its config
+        // from something else, is not knowable from inside a browser tab — and a tool that
+        // states a confident consequence it cannot check is the exact failure this package
+        // is built to avoid. So it reports what it can see and stops there.
+        severity: 'warning',
         code: 'expected-list',
-        message: `\`${formatPath(this.path)}\` is a list, and this is a single block.`,
-        detail: `Envoy expects a sequence here. Almost always this is a missing \`- \` in front of the first field${fields ? ` — the block starting ${fields}` : ''}. As written, Envoy will refuse the config.`,
+        message: `\`${formatPath(this.path)}\` is a list in Envoy's schema, and this is a single block.`,
+        detail: `Attaché reads it as zero entries, so anything depending on it will look empty. The usual cause is a missing \`- \` in front of the first field${fields ? ` — the block starting ${fields}` : ''}. If this config is running, Envoy is being more forgiving here than its schema suggests, and it is the reading below that is wrong rather than your config.`,
         path: this.path,
         range: this.range,
       })

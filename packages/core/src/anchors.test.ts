@@ -174,7 +174,9 @@ static_resources:
 
   test('is reported as the shape problem it is', () => {
     const found = diagnostics.find((d) => d.code === 'expected-list')!
-    expect(found.severity).toBe('error')
+    // A warning, not an error: see the comment in cursor.ts. We can see the shape is not
+    // what the schema says; we cannot see what Envoy will do about it.
+    expect(found.severity).toBe('warning')
     expect(formatPath(found.path)).toBe('static_resources.listeners[0].filter_chains')
     expect(found.detail).toContain('missing `- `')
     // Names what it found, so you can see it is your block rather than a missing one.
