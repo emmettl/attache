@@ -257,8 +257,41 @@ export function buildGraph(model: ConfigModel): Graph {
       })
       edges.push({ from: listenerId, to: chainId, label: criteria.join(' · ') || undefined })
 
+      /**
+       * A cluster this chain reaches, drawn from the chain itself.
+       *
+       * Two quite different things arrive here and both belong on the same edge. A
+       * `tcp_proxy` target IS the routing — there is no route table between the chain and
+       * the cluster, so the edge is the whole story of where a connection goes. A service
+       * cluster is the opposite: `ext_authz` or a gRPC access logger talking to something
+       * off to the side, which the request does not travel to but which the config
+       * genuinely depends on. Labelled differently and drawn the same, because the question
+       * they both answer is "what reaches this cluster", and a graph that showed one and
+       * not the other would be quietly answering it wrongly.
+       */
+      const reach = (name: string, label: string, at: { path: ConfigPath; range: Range }) => {
+        referenced.add(name)
+        const existing = clusterIds.get(name)
+        const to = existing ?? missingCluster(name, at)
+        edges.push({ from: chainId, to, label, dangling: existing === undefined })
+      }
+
+      const tcp = chain.tcpProxy
+      if (tcp) {
+        if (tcp.cluster !== undefined) reach(tcp.cluster, 'tcp', tcp)
+        for (const weighted of tcp.weightedClusters) {
+          reach(weighted.name, weighted.weight === undefined ? 'tcp' : `tcp · weight ${weighted.weight}`, tcp)
+        }
+      }
+
       const hcm = chain.hcm
       if (!hcm) continue
+
+      // Shortened to the last segment: a column of cards reading
+      // `envoy.filters.http.ext_authz` is a column of one repeated prefix.
+      for (const ref of hcm.serviceClusters) {
+        reach(ref.cluster, ref.by.split('.').pop() ?? ref.by, ref)
+      }
 
       if (hcm.routeConfig) {
         addRouteConfig(hcm.routeConfig, `${chainId}:routes`, chainId)

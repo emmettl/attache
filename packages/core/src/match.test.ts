@@ -247,7 +247,7 @@ describe('the cascade before routing', () => {
     expect(result.listenerAttempts[0]!.reason).toContain('10000')
   })
 
-  test('a TCP-only chain has no routes to offer', () => {
+  test('a TCP-only chain answers with its upstream rather than declining to answer', () => {
     const tcp = analyse(`
 static_resources:
   listeners:
@@ -263,7 +263,28 @@ static_resources:
   clusters:
   - name: db
 `).model
-    expect(ask(tcp, {}).outcome).toBe('not-http')
+    // This used to be `not-http` — "no HTTP connection manager, so there are no routes to
+    // match", which is true and useless. The chain names `db` outright and the question was
+    // where the connection goes, so that is now the answer. `not-http` survives for the case
+    // it was really describing: a chain carrying neither an HCM nor a tcp_proxy.
+    const result = ask(tcp, {})
+    expect(result.outcome).toBe('tcp-proxy')
+    expect(result.cluster).toBe('db')
+  })
+
+  test('a chain with neither an HCM nor a tcp_proxy is still `not-http`', () => {
+    const neither = analyse(`
+static_resources:
+  listeners:
+  - name: l
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.echo
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.echo.v3.Echo
+`).model
+    expect(ask(neither, {}).outcome).toBe('not-http')
   })
 
   test('routes that live on a management server are named, not guessed at', () => {

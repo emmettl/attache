@@ -112,10 +112,53 @@ export interface FilterChain extends Sourced {
   match?: FilterChainMatch
   /** The HTTP connection manager in this chain, if it has one. TCP chains do not. */
   hcm?: HttpConnectionManager
+  /**
+   * The TCP proxy in this chain, if it has one. Mutually exclusive with `hcm` in practice.
+   *
+   * Modelled because a `tcp_proxy` chain IS the routing — it names its upstream directly,
+   * with no route table in between. Leaving it out did not merely omit a detail: an entire
+   * class of listener went to nowhere at all. The graph drew the chain as a dead end, the
+   * route tester had no answer for a connection arriving on it, and the cluster it forwards
+   * every byte to was reported as one nothing routes to.
+   */
+  tcpProxy?: TcpProxy
   /** Network filter names in order, including the HCM. For the graph, and for context. */
   filterNames: string[]
   /** Downstream TLS, when the chain terminates it. Absent means plaintext. */
   tls?: TlsContext
+}
+
+/** `tcp_proxy`: a chain that forwards bytes to one upstream, chosen without a route table. */
+export interface TcpProxy extends Sourced {
+  statPrefix?: string
+  /** The upstream, when it names one outright. */
+  cluster?: string
+  /** The other arm: split by weight, decided per connection. */
+  weightedClusters: WeightedCluster[]
+}
+
+/**
+ * A cluster named by something that is not a route.
+ *
+ * Envoy's extensions talk to clusters: `ext_authz` calls one on every request, a gRPC access
+ * logger streams to one, `jwt_authn` fetches its keys from one. Those are real edges in the
+ * config — the cluster is defined here, referred to here, and reached at runtime — and until
+ * they were read this package could not see any of them.
+ *
+ * The cost of not seeing them was not a missing feature, it was two wrong answers. A cluster
+ * reached only by `ext_authz` was reported as one nothing routes to, and the detail on that
+ * finding had to hedge — "a cluster can be reached by a filter" — because the tool genuinely
+ * could not tell. Now it can, for the extensions it knows.
+ *
+ * Deliberately shallow: this is the ONE field in each extension that names a cluster. What
+ * the extension does with that cluster is not modelled and is still reported as read but not
+ * checked, exactly as before.
+ */
+export interface ClusterRef extends Sourced {
+  /** The cluster name, as written. */
+  cluster: string
+  /** What names it — `envoy.filters.http.ext_authz`, `envoy.access_loggers.http_grpc`. */
+  by: string
 }
 
 /**
@@ -205,6 +248,15 @@ export interface HttpConnectionManager extends Sourced {
   internalAddress?: InternalAddressConfig
   /** Access loggers by name. What each one writes, and where, is not modelled. */
   accessLogNames: string[]
+  /**
+   * Clusters this connection manager's own machinery talks to, rather than routes to.
+   *
+   * Its HTTP filters, its gRPC access loggers and its tracing provider. Collected here
+   * rather than beside each because every consumer wants the same thing from them — is this
+   * cluster reachable, and what reaches it — and none wants to know which of the three
+   * places it came from.
+   */
+  serviceClusters: ClusterRef[]
   /** Protocol upgrades this listener will accept — `websocket`, `CONNECT`. */
   upgrades: UpgradeConfig[]
 }

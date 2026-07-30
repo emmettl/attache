@@ -27,8 +27,18 @@ function allRouteConfigs(model: ConfigModel): { config: RouteConfig; via: string
 }
 
 /** Cluster names named by any route action, with where they were named. */
+/**
+ * Every place this config names a cluster, wherever it names it from.
+ *
+ * Routes are the obvious half. The other half is everything that reaches a cluster WITHOUT
+ * routing to it — a `tcp_proxy` chain, an authorization filter, a gRPC access logger, a
+ * tracing collector — and leaving those out was not a gap in coverage so much as a source of
+ * wrong answers. A cluster called only by `ext_authz` came back as one nothing routes to, and
+ * a `tcp_proxy` listener's entire upstream did too.
+ */
 function clusterReferences(model: ConfigModel): { name: string; at: Sourced }[] {
   const out: { name: string; at: Sourced }[] = []
+
   for (const { config } of allRouteConfigs(model)) {
     for (const host of config.virtualHosts) {
       for (const route of host.routes) {
@@ -39,6 +49,21 @@ function clusterReferences(model: ConfigModel): { name: string; at: Sourced }[] 
       }
     }
   }
+
+  for (const listener of model.listeners) {
+    for (const chain of [...listener.filterChains, listener.defaultFilterChain]) {
+      if (!chain) continue
+
+      const tcp = chain.tcpProxy
+      if (tcp) {
+        if (tcp.cluster !== undefined) out.push({ name: tcp.cluster, at: tcp })
+        for (const weighted of tcp.weightedClusters) out.push({ name: weighted.name, at: tcp })
+      }
+
+      for (const ref of chain.hcm?.serviceClusters ?? []) out.push({ name: ref.cluster, at: ref })
+    }
+  }
+
   return out
 }
 
@@ -146,9 +171,14 @@ export function validate(model: ConfigModel): Diagnostic[] {
     out.push({
       severity: 'warning',
       code: 'cluster-unused',
-      message: `Nothing routes to \`${cluster.name}\`.`,
+      message: `Nothing reaches \`${cluster.name}\`.`,
+      // The hedge this used to carry — "a cluster can be reached by a filter" — was there
+      // because filters were not read, so the warning could not tell an unused cluster from
+      // one an authorization filter calls on every request. Those are read now, along with
+      // tcp_proxy and the gRPC loggers, so what is left to be uncertain about is what
+      // genuinely is not in the file: routes that arrive over RDS.
       detail:
-        'Not an error — a cluster can be reached by a filter, by an RDS-delivered route, or by nothing at all. Worth a look if you expected traffic to reach it.',
+        'Not an error — routes that arrive over RDS are not in this file, so a cluster they name looks unreached from here. Attaché has checked the routes, tcp_proxy chains, and the filters and loggers that call a cluster directly. Worth a look if you expected traffic to reach it.',
       path: cluster.path,
       range: cluster.range,
     })
