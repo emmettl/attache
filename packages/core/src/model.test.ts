@@ -225,7 +225,12 @@ describe('a config that has been in production', () => {
 
   test('keeps the three protocol option blocks apart', () => {
     expect(hcm.http1).toEqual({ acceptHttp10: true, defaultHostForHttp10: 'legacy.internal' })
-    expect(hcm.http2).toEqual({ maxConcurrentStreams: 100, allowConnect: true })
+    expect(hcm.http2).toEqual({
+      maxConcurrentStreams: 100,
+      allowConnect: true,
+      initialStreamWindowSize: 65536,
+      initialConnectionWindowSize: 1048576,
+    })
     expect(hcm.internalAddress).toEqual({ unixSockets: true, cidrRanges: ['10.0.0.0/8'] })
   })
 
@@ -252,10 +257,11 @@ describe('a config that has been in production', () => {
   })
 
   test('reads what a proxying route does on the way upstream', () => {
-    expect(routes[2]!.forwarding).toEqual({
+    expect(routes[3]!.forwarding).toEqual({
       timeout: '15s',
       idleTimeout: undefined,
       prefixRewrite: '/',
+      regexRewrite: undefined,
       hostRewriteLiteral: 'api.internal',
       hasRetryPolicy: true,
       retryOn: '5xx,reset',
@@ -281,7 +287,7 @@ describe('a config that has been in production', () => {
         type: 'type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute',
       },
     ])
-    expect(routes[2]!.typedPerFilterConfig).toEqual([])
+    expect(routes[3]!.typedPerFilterConfig).toEqual([])
   })
 
   test('reads the bootstrap top level', () => {
@@ -299,22 +305,46 @@ describe('a config that has been in production', () => {
     })
   })
 
+  test('says where a redirect rewrites its path by regex, without applying it', () => {
+    expect(routes[2]!.action).toMatchObject({
+      kind: 'redirect',
+      regexRewrite: { pattern: '^/docs/(.*)$', substitution: '/documentation/\\1' },
+    })
+  })
+
+  test('reads the chain match criteria it will not evaluate, rather than skipping them', () => {
+    const match = listener.filterChains[0]!.match!
+    // Named, not merely counted. The distinction this asserts is the whole point: these are
+    // fields Attaché recognises and declines to answer, not fields it has never seen.
+    expect(match.unevaluatedCriteria).toEqual(['source_prefix_ranges', 'source_type'])
+    expect(match.hasUnmodelledCriteria).toBe(false)
+  })
+
   test('has nothing left it cannot name', () => {
     expect(unknowns.filter((u) => u.kind === 'unrecognised')).toEqual([])
-    // What remains is every place it stopped on purpose: two filters' configs, a listener
-    // filter's, an access logger's, and the four blocks on the cluster it reads for presence.
+    // What remains is every place it stopped on purpose. Each of these was, at some point,
+    // reported as a field Attaché had never heard of, on a config where all of it is
+    // ordinary: a sidecar's source-range chain match, the TLS parameters on both ends of it,
+    // the CORS and hash policy on a route, and the admin interface's own access log.
     expect(unknowns.map((u) => u.key)).toEqual([
       'typed_config',
+      'cors',
+      'hash_policy',
       'typed_config',
       'typed_config',
       'typed_config',
+      'source_prefix_ranges',
+      'tls_params',
       'eds_cluster_config',
+      'tls_params',
+      'validation_context_sds_secret_config',
       'health_checks',
       'circuit_breakers',
       'outlier_detection',
       'typed_extension_protocol_options',
+      'access_log',
     ])
-    expect(summary).toContain('9 fields read but not checked')
+    expect(summary).toContain('16 fields read but not checked')
     expect(summary).not.toMatch(/valid|✓/i)
   })
 })

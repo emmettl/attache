@@ -385,7 +385,12 @@ static_resources:
   clusters:
   - name: internal
 `).model
-    expect(ask(model, {}).caveats.join(' ')).toContain('does not evaluate')
+    const caveats = ask(model, {}).caveats.join(' ')
+    expect(caveats).toContain('does not evaluate')
+    // Which criterion, not just that there was one. The old wording gestured at "source or
+    // destination IP ranges" in general and left the reader to go and find which chain field
+    // it meant.
+    expect(caveats).toContain('`source_prefix_ranges`')
   })
 })
 
