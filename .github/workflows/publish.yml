@@ -53,6 +53,11 @@ jobs:
 
       - run: npm ci
 
+      # `npm test` includes the browser project, so the release needs a Chromium the same way
+      # CI does. Without it the publish fails at the one step that exists to stop a broken
+      # release, which would be an unusually expensive way to find out.
+      - run: npx playwright install --with-deps chromium
+
       # The full check, before anything leaves the machine. Publishing something that
       # does not lint, type-check or pass its tests is the one failure this workflow
       # exists to prevent — CI on main can go red after a merge, and the release would

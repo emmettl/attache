@@ -12,14 +12,20 @@
     "dev": "npm run dev --workspace @attache/app",
     "build": "npm run build --workspaces --if-present",
     "lint": "oxlint",
+    "//test": "Both projects: the node suite, and the browser suite that covers what a headless DOM cannot see. `test:node` is the fast inner loop; the browser project needs a Chromium, which `npx playwright install chromium` provides.",
     "test": "vitest run",
+    "test:node": "vitest run --project node",
+    "test:browser": "vitest run --project browser",
     "test:watch": "vitest",
     "preview": "npm run preview --workspace @attache/app",
     "start": "npm run start --workspace @attache/app",
     "typecheck": "tsc -b packages/core packages/cli packages/app"
   },
   "devDependencies": {
+    "@vitest/browser": "^4.1.10",
+    "@vitest/browser-playwright": "^4.1.10",
     "oxlint": "^1.71.0",
+    "playwright": "^1.56.1",
     "typescript": "~7.0.2",
     "vitest": "^4.1.10"
   }
