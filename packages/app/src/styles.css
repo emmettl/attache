@@ -736,6 +736,14 @@ code {
   min-width: 0;
   overflow: auto;
   padding: 6.1rem 0.8rem 0.8rem;
+  /*
+    For the caret, which scrolls its node into view with `nearest` — the least movement that
+    makes it visible, so that following a cursor does not throw away your bearings in the
+    drawing. The cost of `nearest` is that it stops the moment the node is technically on
+    screen, flush against the edge and half under whatever is floating there. This buys it a
+    margin without buying a jump.
+  */
+  scroll-padding: 1rem;
 }
 
 .graph-canvas {

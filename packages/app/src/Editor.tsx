@@ -483,6 +483,24 @@ export function Editor() {
       EditorView.lineWrapping,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) onChange.current(update.state.doc.toString())
+
+        /**
+         * Where the caret is, for the graph to mark the node it sits in.
+         *
+         * Reported only while the editor HAS focus, and cleared the moment it does not. A
+         * caret stays wherever it was last left, so a graph that went on answering about it
+         * would be pointing at a place nobody is looking — and worse, it would fight the
+         * hover: moving the pointer onto the graph blurs nothing, so the two would both be
+         * live and the panel would be describing two different things at once.
+         *
+         * `selectionSet` covers arrow keys and clicks, `docChanged` covers typing pushing
+         * the caret onto another line, and `focusChanged` covers arriving and leaving.
+         */
+        if (!update.docChanged && !update.selectionSet && !update.focusChanged) return
+        const caret = update.view.hasFocus
+          ? update.state.doc.lineAt(update.state.selection.main.head).number
+          : null
+        useStore.getState().setCaretLine(caret)
       }),
     ]
 
@@ -516,6 +534,10 @@ export function Editor() {
       instance.dom.removeEventListener('mousedown', onGutterMouseDown)
       instance.destroy()
       view.current = null
+      // Destroying the view fires no blur, so without this the last caret line outlives the
+      // editor that reported it and the graph goes on marking a node for a cursor that is
+      // not on screen.
+      useStore.getState().setCaretLine(null)
     }
   }, [])
 

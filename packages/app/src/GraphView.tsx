@@ -1,5 +1,5 @@
 import { docsForKind } from '@attache/core'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NODE_H, NODE_W, layoutGraph, searchGraph } from './graphLayout.js'
 import { useStore, type LineRange } from './store.js'
 
@@ -44,17 +44,6 @@ export function GraphView() {
   const [mode, setMode] = useState<Mode>('highlight')
   const [showEndpoints, setShowEndpoints] = useState(true)
 
-  /**
-   * Hover previews, selection persists, one rule for everything downstream.
-   *
-   * Deliberately not two rules. Having the neighbour highlight follow the pointer while the
-   * link and the band followed the selection was the first attempt, and it is defensible in
-   * a sentence and incoherent in the hand: three things on screen, moving to two different
-   * clocks. This way the graph always answers about ONE node, the pointer proposes it and a
-   * click keeps it, and letting go of the pointer falls back to what you kept.
-   */
-  const active = hovered ?? selected
-
   // Matching runs against the WHOLE graph, endpoint toggle or not. The toggle is about how
   // much of the drawing you want to look at; it is not a statement that endpoint addresses
   // have stopped being searchable. Typing `10.0.0.1` with endpoints hidden should still
@@ -74,6 +63,75 @@ export function GraphView() {
   }, [graph, search, mode, showEndpoints])
 
   const layout = useMemo(() => layoutGraph(graph, include), [graph, include])
+
+  /**
+   * The node the caret is sitting in, while the editor has focus.
+   *
+   * SMALLEST span wins, because node ranges nest: a caret on a route's line is inside that
+   * route, its virtual host, its route config, its filter chain and its listener all at
+   * once, and the only one of those five that tells you anything you did not already know
+   * from looking at the line is the innermost.
+   *
+   * Dangling placeholders are excluded for the same reason `maskRanges` below excludes them:
+   * their range is BORROWED from whatever referred to them, so a missing cluster carries the
+   * range of the route that named it. Left in, it would tie with that route on span and
+   * could win — putting the caret on a route and marking a cluster that does not exist.
+   *
+   * Drawn from `layout.nodes` rather than `graph.nodes` so that a node the search or the
+   * endpoint toggle has taken off the canvas cannot be the answer. Marking something that
+   * is not on screen is the same as marking nothing, except that it also stops the search
+   * from being believed.
+   */
+  const caretLine = useStore((s) => s.caretLine)
+  const atCaret = useMemo(() => {
+    if (caretLine === null) return null
+    let best: (typeof layout.nodes)[number] | undefined
+    for (const node of layout.nodes) {
+      if (node.problem === 'dangling') continue
+      if (caretLine < node.range.line || caretLine > node.range.endLine) continue
+      if (best === undefined || node.range.endLine - node.range.line < best.range.endLine - best.range.line) {
+        best = node
+      }
+    }
+    return best?.id ?? null
+  }, [caretLine, layout.nodes])
+
+  /**
+   * Hover previews, selection persists, the caret answers when neither does — one rule for
+   * everything downstream.
+   *
+   * Deliberately not several rules. Having the neighbour highlight follow the pointer while
+   * the link and the band followed the selection was the first attempt, and it is defensible
+   * in a sentence and incoherent in the hand: three things on screen, moving to two different
+   * clocks. This way the graph always answers about ONE node.
+   *
+   * The caret goes LAST because it is the only one of the three you do not aim: it is
+   * wherever editing left it. Anything you pointed at or clicked is a question you actually
+   * asked, and has to outrank a cursor that happens to be somewhere.
+   */
+  const active = hovered ?? selected ?? atCaret
+
+  /**
+   * Bring the caret's node into view, because otherwise the feature is invisible.
+   *
+   * Hover and selection never need this: you are pointing at a node you can already see. The
+   * caret picks one by where you are in the FILE, which bears no relation to where the graph
+   * happens to be scrolled — so marking a route four columns to the right showed nothing but
+   * the visible half of the graph going grey, with the lit nodes off screen and no way to
+   * tell that was what had happened.
+   *
+   * Only when the caret is what `active` is answering about. Scrolling the canvas out from
+   * under somebody who is hovering or has pinned a node would be taking the graph away from
+   * them to show them something they did not ask about. `nearest` for the same reason: move
+   * as little as it takes, rather than centring and throwing away their bearings.
+   */
+  const scroller = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (hovered !== null || selected !== null || atCaret === null) return
+    scroller.current
+      ?.querySelector(`[data-node=${JSON.stringify(atCaret)}]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+  }, [atCaret, hovered, selected])
 
   /**
    * The parts of the source that are NOT relevant, for the editor to grey out.
@@ -182,7 +240,7 @@ export function GraphView() {
 
   return (
     <div className="panel-body graph-panel">
-      <div className="graph-scroll">
+      <div className="graph-scroll" ref={scroller}>
         {layout.nodes.length === 0 ? (
           <p className="muted">
             Nothing in this config matches <code>{query.trim()}</code> — searched every node's
@@ -248,6 +306,7 @@ export function GraphView() {
               {layout.nodes.map((node) => (
                 <button
                   key={node.id}
+                  data-node={node.id}
                   className={`graph-node ${node.kind} ${node.problem ?? ''} ${nodeState(node.id)} ${
                     search?.matched.has(node.id) ? 'hit' : ''
                   } ${selected === node.id ? 'selected' : ''}`}

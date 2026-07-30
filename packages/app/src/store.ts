@@ -102,6 +102,17 @@ interface State {
    * block banded by a hover still reads as banded when it sits inside a masked region.
    */
   mask: LineRange[] | null
+  /**
+   * The line the caret is on, while the editor has focus. Null when it does not.
+   *
+   * The direction the graph did not have. Everything else here flows panel → editor: a
+   * hovered node bands its lines, a clicked finding scrolls to them. This is the return
+   * trip — where you are in the file, so the graph can say which of its nodes that is —
+   * and the focus condition is the whole of what makes it bearable. A caret is wherever it
+   * was last left, so a graph answering about it forever would be answering about a
+   * position nobody is looking at.
+   */
+  caretLine: number | null
   request: RequestForm
   match: MatchResult | null
   shareLink: string | null
@@ -119,6 +130,7 @@ interface State {
   focusFinding: (line: number) => void
   setHighlight: (block: LineRange | null) => void
   setMask: (blocks: LineRange[] | null) => void
+  setCaretLine: (line: number | null) => void
   setRequest: (patch: Partial<RequestForm>) => void
   runMatch: () => void
   share: (text: string) => Promise<void>
@@ -253,6 +265,7 @@ export const useStore = create<State>((set, get) => ({
   focus: null,
   highlight: null,
   mask: null,
+  caretLine: null,
   request: DEFAULT_REQUEST,
   match: null,
   shareLink: null,
@@ -333,6 +346,13 @@ export const useStore = create<State>((set, get) => ({
 
   setMask(blocks) {
     set({ mask: blocks })
+  },
+
+  setCaretLine(line) {
+    // Guarded, because this fires on every cursor movement — arrow keys included — and most
+    // of them stay on the line they started on. Without it every keystroke would notify
+    // every subscriber to re-derive the same answer.
+    if (get().caretLine !== line) set({ caretLine: line })
   },
 
   setRequest(patch) {
