@@ -31,9 +31,12 @@
   "engines": {
     "node": ">=18"
   },
+  "//files-og": "The link-preview image is excluded from the tarball, not from the build. It exists for crawlers fetching the hosted page, and no crawler fetches localhost — so shipping it would put 82kB of social preview, nearly half the package, into a download whose entire pitch is that it is one small tarball. The Pages deploy uploads dist/ directly and is unaffected.",
   "files": [
     "bin",
     "dist",
+    "!dist/og.png",
+    "!dist/og.svg",
     "README.md"
   ],
   "scripts": {

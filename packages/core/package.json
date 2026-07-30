@@ -34,10 +34,12 @@
     }
   },
   "//files": "src ships alongside dist. The declaration maps and source maps in dist point at ../src/*.ts, so without it they dangle and 'go to definition' lands nowhere. It is also the more useful half of this package to have on hand: the reasoning about Envoy's matching order lives in its comments, and a consumer who wants to know why a longer suffix wildcard beats a shorter one should be able to read that rather than infer it from minified output.",
+  "//files-fixtures": "fixtures.ts is test data and is excluded by name because it does not look like a test — no assertions, so the glob above does not catch it. It is also excluded from tsconfig.build.json, so neither the source nor a compiled copy ships.",
   "files": [
     "dist",
     "src",
     "!src/**/*.test.ts",
+    "!src/fixtures.ts",
     "README.md"
   ],
   "//engines": "A floor, not a support statement: nothing here uses an API newer than this. CI builds and tests on 24.",

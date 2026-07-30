@@ -32,5 +32,9 @@
     "skipLibCheck": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  // `fixtures.ts` is test data, and it is excluded by name because it does not look like a
+  // test: it holds no assertions, so `*.test.ts` does not catch it, and without this it
+  // compiles into dist/ and ships to consumers who have no use for three sample Envoy
+  // configs. `tsconfig.json` still type-checks it, because the tests do import it.
+  "exclude": ["src/**/*.test.ts", "src/fixtures.ts"]
 }
