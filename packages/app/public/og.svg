@@ -1,27 +1,93 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img"
-     aria-label="Attaché — an Envoy config workbench">
+     aria-label="Attaché — an Envoy config workbench. A listener fanning out through two routes to two clusters.">
   <!-- Source for og.png, which is what actually ships: crawlers do not render SVG for
        og:image. Rasterise with `npm run og` (needs `brew install librsvg`).
-       Kept in the repo alongside the PNG so the image can be edited rather than redrawn. -->
+       Kept in the repo alongside the PNG so the image can be edited rather than redrawn.
+
+       The graph on the right is DRAWN, not screenshotted, and deliberately so. A capture of
+       the real panel scaled into this space puts 12px node labels at about 7px, which is
+       mush at the size a feed actually shows this. The geometry, the colours and the labels
+       are lifted from the front-proxy example as the app lays it out — same 3px tinted left
+       edge per kind, same rounded cards, same curved edges — at a size that survives being
+       looked at. It is a picture of the graph view rather than a photograph of it.
+
+       Three columns rather than the app's seven, ending at the clusters: the branch is the
+       part worth showing, and it is the part a config does not show you. -->
   <rect width="1200" height="630" fill="#10141b"/>
 
-  <!-- A hint of the graph the tool draws.
-       Confined to the right of x=700 and below y=250, which is the only region no text
-       occupies: an earlier version fanned across the whole canvas and put a node directly
-       behind the word "request", which is exactly the sort of decoration that makes a
-       headline harder to read in a feed thumbnail. -->
-  <g opacity="0.16" stroke="#7dd3fc" stroke-width="3" fill="none" stroke-linecap="round">
-    <path d="M700 515 C 795 515 795 455 890 455 M700 515 C 795 515 795 575 890 575"/>
-    <path d="M890 455 C 985 455 985 445 1090 445 M890 575 C 985 575 985 585 1090 585"/>
-  </g>
-  <g opacity="0.26" fill="#a7f3d0">
-    <circle cx="890" cy="455" r="9"/><circle cx="890" cy="575" r="9"/>
-    <circle cx="1090" cy="445" r="9"/><circle cx="1090" cy="585" r="9"/>
-  </g>
-  <circle cx="700" cy="515" r="12" fill="#7dd3fc" opacity="0.34"/>
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M0 1 L7 4 L0 7 z" fill="#46566d"/>
+    </marker>
+  </defs>
 
-  <!-- The mark, at the size the fan was drawn for. -->
-  <g transform="translate(96 86) scale(4.4)">
+  <!-- The graph panel. Sized so the clusters column ends INSIDE it: an earlier version ran
+       the columns off the right edge as a bleed, and at this width the cut landed a few
+       pixels after `api_service` — which reads as a label that nearly did not fit rather
+       than as a picture continuing past the frame. -->
+  <rect x="640.5" y="96.5" width="519" height="437" rx="15.5" fill="#161b24" stroke="#2a323f"/>
+
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="12"
+     font-weight="600" fill="#6b7688" letter-spacing="1.2">
+    <text x="664" y="176">LISTENERS</text>
+    <text x="832" y="176">ROUTES</text>
+    <text x="1000" y="176">CLUSTERS</text>
+  </g>
+
+  <!-- Edges first, so the cards sit on top of them the way they do in the app. -->
+  <g fill="none" stroke="#46566d" stroke-width="2">
+    <path d="M 800 344 C 816 344, 816 276, 832 276" marker-end="url(#a)"/>
+    <path d="M 800 344 C 816 344, 816 412, 832 412" marker-end="url(#a)"/>
+    <path d="M 968 276 L 1000 276" marker-end="url(#a)"/>
+    <path d="M 968 412 L 1000 412" marker-end="url(#a)"/>
+  </g>
+
+  <!-- One listener, two routes, two clusters — the front-proxy example, as the app draws it.
+       `g` per card: the plate, the tinted edge that identifies the column, then the label
+       and the detail line under it. -->
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+    <g>
+      <rect x="664" y="318" width="136" height="52" rx="9" fill="#1b212c" stroke="#2a323f"/>
+      <rect x="664" y="326" width="3" height="36" rx="1.5" fill="#6fb3f5"/>
+      <text x="680" y="341" font-size="15" font-weight="600" fill="#e6eaf0">ingress</text>
+      <text x="680" y="359" font-size="11.5" font-family="Menlo, Consolas, monospace"
+            fill="#97a1b0">0.0.0.0:10000</text>
+    </g>
+
+    <g>
+      <rect x="832" y="250" width="136" height="52" rx="9" fill="#1b212c" stroke="#2a323f"/>
+      <rect x="832" y="258" width="3" height="36" rx="1.5" fill="#e5b567"/>
+      <text x="848" y="273" font-size="15" font-weight="600" fill="#e6eaf0">route 1</text>
+      <text x="848" y="291" font-size="11.5" font-family="Menlo, Consolas, monospace"
+            fill="#97a1b0">prefix /api</text>
+    </g>
+    <g>
+      <rect x="832" y="386" width="136" height="52" rx="9" fill="#1b212c" stroke="#2a323f"/>
+      <rect x="832" y="394" width="3" height="36" rx="1.5" fill="#e5b567"/>
+      <text x="848" y="409" font-size="15" font-weight="600" fill="#e6eaf0">route 2</text>
+      <text x="848" y="427" font-size="11.5" font-family="Menlo, Consolas, monospace"
+            fill="#97a1b0">prefix /</text>
+    </g>
+
+    <g>
+      <rect x="1000" y="250" width="136" height="52" rx="9" fill="#1b212c" stroke="#2a323f"/>
+      <rect x="1000" y="258" width="3" height="36" rx="1.5" fill="#6ed69a"/>
+      <text x="1016" y="273" font-size="15" font-weight="600" fill="#e6eaf0">api_service</text>
+      <text x="1016" y="291" font-size="11.5" font-family="Menlo, Consolas, monospace"
+            fill="#97a1b0">STRICT_DNS</text>
+    </g>
+    <g>
+      <rect x="1000" y="386" width="136" height="52" rx="9" fill="#1b212c" stroke="#2a323f"/>
+      <rect x="1000" y="394" width="3" height="36" rx="1.5" fill="#6ed69a"/>
+      <text x="1016" y="409" font-size="15" font-weight="600" fill="#e6eaf0">web_service</text>
+      <text x="1016" y="427" font-size="11.5" font-family="Menlo, Consolas, monospace"
+            fill="#97a1b0">STRICT_DNS</text>
+    </g>
+  </g>
+
+  <!-- The mark and the words. -->
+  <g transform="translate(88 84) scale(3.9)">
     <rect width="32" height="32" rx="7.5" fill="#232c3c"/>
     <path d="M12.6 11.2V9.9a1.6 1.6 0 0 1 1.6-1.6h3.6a1.6 1.6 0 0 1 1.6 1.6v1.3"
           fill="none" stroke="#7dd3fc" stroke-width="1.8" stroke-linejoin="round"/>
@@ -34,16 +100,21 @@
     <circle cx="19.3" cy="22.4" r="1.5" fill="#232c3c"/>
   </g>
 
-  <text x="270" y="176" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
-        font-size="88" font-weight="700" fill="#e6eaf0" letter-spacing="-2">Attaché</text>
-  <text x="274" y="228" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
-        font-size="31" fill="#97a1b0">an Envoy config workbench</text>
+  <text x="232" y="158" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="76" font-weight="700" fill="#e6eaf0" letter-spacing="-1.8">Attaché</text>
+  <text x="236" y="204" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="27" fill="#97a1b0">an Envoy config workbench</text>
 
-  <text x="96" y="360" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
-        font-size="40" fill="#e6eaf0">Check a config, see what connects to what, and find</text>
-  <text x="96" y="414" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
-        font-size="40" fill="#e6eaf0">out where a request <tspan font-weight="700" fill="#7dd3fc">actually</tspan> goes.</text>
+  <!-- Wrapped to three shorter lines than the old two, because the right half is no longer
+       empty and a headline running under the panel would be a headline you cannot read. -->
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="32" fill="#e6eaf0">
+    <text x="88" y="312">Check a config, see what</text>
+    <text x="88" y="356">connects to what, and find out</text>
+    <text x="88" y="400">where a request <tspan font-weight="700" fill="#7dd3fc">actually</tspan> goes.</text>
+  </g>
 
-  <text x="96" y="546" font-family="Menlo, Consolas, monospace" font-size="30" fill="#6fb3f5">npx @attache/app</text>
-  <text x="96" y="590" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="24" fill="#6b7688">Runs entirely in your browser. Nothing is uploaded.</text>
+  <text x="88" y="516" font-family="Menlo, Consolas, monospace" font-size="28"
+        fill="#6fb3f5">npx @attache/app</text>
+  <text x="88" y="558" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="22" fill="#6b7688">Runs entirely in your browser. Nothing is uploaded.</text>
 </svg>
