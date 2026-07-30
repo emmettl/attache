@@ -123,6 +123,14 @@ static_resources:
  * like this — reported as fifty fields Attaché did not understand, about half of them
  * ordinary — that made the split between unrecognised and unvalidated necessary.
  *
+ * It has since been widened a second time, from the same source. Once the split landed, the
+ * fifteen fields still called unrecognised on that config turned out to be fifteen out of
+ * fifteen that Envoy documents and nobody had misspelled: TLS parameters, source-range chain
+ * matching, HTTP/2 flow control, CORS, hash policy, a regex rewrite, the admin access log.
+ * A list meant to read as "one of these might be your typo" containing no typos at all is
+ * not reporting an edge, it is reporting a backlog — so every one of them is written here
+ * now, and the test below is what keeps them read.
+ *
  * So this exists to be the config the coverage is measured against, and to fail loudly if
  * any of it stops being read.
  */
@@ -132,6 +140,11 @@ node:
   cluster: api
 
 admin:
+  access_log:
+  - name: envoy.access_loggers.file
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+      path: /var/log/envoy/admin.log
   address:
     socket_address: { address: 127.0.0.1, port_value: 15000 }
 
@@ -155,7 +168,23 @@ static_resources:
       typed_config:
         "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
     filter_chains:
-    - filters:
+    - filter_chain_match:
+        source_prefix_ranges:
+        - { address_prefix: 10.0.0.0, prefix_len: 8 }
+        source_type: EXTERNAL
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          require_client_certificate: true
+          common_tls_context:
+            tls_params:
+              tls_minimum_protocol_version: TLSv1_2
+              cipher_suites: [ECDHE-ECDSA-AES256-GCM-SHA384]
+            alpn_protocols: [h2, http/1.1]
+            tls_certificate_sds_secret_configs:
+            - name: default
+      filters:
       - name: envoy.filters.network.http_connection_manager
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
@@ -174,6 +203,8 @@ static_resources:
             default_host_for_http_10: legacy.internal
           http2_protocol_options:
             max_concurrent_streams: 100
+            initial_stream_window_size: 65536
+            initial_connection_window_size: 1048576
             allow_connect: true
           internal_address_config:
             unix_sockets: true
@@ -210,6 +241,13 @@ static_resources:
                   prefix_rewrite: /v2
                   https_redirect: true
                   response_code: TEMPORARY_REDIRECT
+              - name: docs
+                match: { prefix: /docs }
+                redirect:
+                  regex_rewrite:
+                    pattern: { google_re2: {}, regex: '^/docs/(.*)$' }
+                    substitution: '/documentation/\\1'
+                  response_code: MOVED_PERMANENTLY
               - name: api
                 match: { prefix: / }
                 route:
@@ -217,6 +255,12 @@ static_resources:
                   timeout: 15s
                   prefix_rewrite: /
                   host_rewrite_literal: api.internal
+                  hash_policy:
+                  - header: { header_name: x-user-id }
+                  cors:
+                    allow_origin_string_match:
+                    - { prefix: https://app.example.com }
+                    allow_methods: GET, POST
                   retry_policy:
                     retry_on: 5xx,reset
                     num_retries: 3
@@ -235,6 +279,15 @@ static_resources:
     eds_cluster_config:
       eds_config: { ads: {} }
       service_name: api|8080
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          tls_params:
+            tls_minimum_protocol_version: TLSv1_2
+          validation_context_sds_secret_config:
+            name: ROOTCA
     typed_extension_protocol_options:
       envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
         "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
