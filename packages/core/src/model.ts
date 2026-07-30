@@ -537,7 +537,7 @@ function fromConfigDump(root: Cursor): {
 
 export function buildModel(parsed: ParseResult): ModelResult {
   const diagnostics: Diagnostic[] = []
-  const root = cursorOver(parsed.root, parsed.positions, diagnostics)
+  const root = cursorOver(parsed.root, parsed.positions, diagnostics, parsed.doc)
 
   const raw = parsed.format === 'config-dump' ? fromConfigDump(root) : fromBootstrap(root)
 

@@ -1,4 +1,4 @@
-import { isMap, isScalar, isSeq, type Node } from 'yaml'
+import { isAlias, isMap, isScalar, isSeq, type Document, type Node } from 'yaml'
 import type { Diagnostic, Unknown } from './diagnostics.js'
 import { formatPath, toCamel, type ConfigPath, type Range } from './source.js'
 import type { Positions } from './parse.js'
@@ -19,6 +19,28 @@ import type { Positions } from './parse.js'
 interface Context {
   positions: Positions
   diagnostics: Diagnostic[]
+  /** Needed to resolve aliases back to the node they were anchored on. */
+  doc: Document
+}
+
+/**
+ * Follow `*alias` to the `&anchor` it names.
+ *
+ * Real configs are full of these — a filter chain or a TLS context written once and
+ * referenced from every listener that shares it — and an Alias is neither a map nor a
+ * sequence, so without this a `filter_chains: *shared` reads as absent and the tool
+ * confidently reports a listener with no filter chains. That is not a cosmetic miss: it
+ * turns the checks into false accusations on exactly the configs most worth checking.
+ *
+ * Bounded rather than recursive-until-done, because a self-referential anchor is a document
+ * a person can write and this should not be where it becomes a hang.
+ */
+function deref(doc: Document, node: Node | null): Node | null {
+  let current = node
+  for (let hops = 0; hops < 32 && isAlias(current); hops++) {
+    current = (current.resolve(doc) ?? null) as Node | null
+  }
+  return isAlias(current) ? null : current
 }
 
 /** One `key: value` in the source, with the key spelled the way it was written. */
@@ -50,10 +72,13 @@ export class Cursor {
 
   constructor(ctx: Context, node: Node | null, path: ConfigPath, key: string) {
     this.ctx = ctx
-    this.node = node
     this.path = path
     this.key = key
+    // The RANGE comes from the node as written and the CONTENT from what it resolves to.
+    // Pointing a diagnostic at the anchor's definition when the user wrote an alias would
+    // send them to a line they did not touch, possibly in a different listener.
     this.range = ctx.positions.range(node?.range)
+    this.node = deref(ctx.doc, node)
   }
 
   // ---- shape -------------------------------------------------------------------
@@ -66,23 +91,65 @@ export class Cursor {
     return isSeq(this.node)
   }
 
-  private entries(): Entry[] {
-    if (this.entriesCache) return this.entriesCache
+  /**
+   * A map's fields, with `<<` merges folded in.
+   *
+   * Recursive, because a merge target can carry a merge of its own — a base map extended by
+   * a second that extends a third is an ordinary way to write shared defaults, and treating
+   * a target's items as final would leave its own `<<` sitting there as a field called
+   * "<<". The depth bound is a backstop against anchors that reference each other.
+   *
+   * Precedence follows YAML: keys written here beat merged ones, and among merge targets
+   * the earlier beats the later. Both fall out of only ever appending what is not already
+   * present, given the explicit keys go in first.
+   */
+  private entriesOf(node: Node | null, depth = 0): Entry[] {
     const out: Entry[] = []
-    if (isMap(this.node)) {
-      for (const pair of this.node.items) {
-        if (!isScalar(pair.key)) continue
-        const raw = String(pair.key.value)
-        out.push({
-          raw,
-          camel: toCamel(raw),
-          keyRange: this.ctx.positions.range(pair.key.range),
-          value: (pair.value ?? null) as Node | null,
-        })
+    if (!isMap(node) || depth > 16) return out
+
+    const merged: Node[] = []
+
+    for (const pair of node.items) {
+      if (!isScalar(pair.key)) continue
+      const raw = String(pair.key.value)
+
+      // Its value is an alias, or a sequence of them. Dropping this — which is what used to
+      // happen — does not merely mislabel a config, it loses fields: a cluster whose `type`
+      // and `connect_timeout` arrive through `<<: *defaults` had neither.
+      if (raw === '<<') {
+        const value = deref(this.ctx.doc, (pair.value ?? null) as Node | null)
+        if (isSeq(value)) {
+          for (const item of value.items) {
+            const target = deref(this.ctx.doc, (item ?? null) as Node | null)
+            if (target) merged.push(target)
+          }
+        } else if (value) {
+          merged.push(value)
+        }
+        continue
+      }
+
+      out.push({
+        raw,
+        camel: toCamel(raw),
+        keyRange: this.ctx.positions.range(pair.key.range),
+        value: (pair.value ?? null) as Node | null,
+      })
+    }
+
+    for (const target of merged) {
+      for (const entry of this.entriesOf(target, depth + 1)) {
+        if (out.some((e) => e.camel === entry.camel)) continue
+        out.push(entry)
       }
     }
-    this.entriesCache = out
+
     return out
+  }
+
+  private entries(): Entry[] {
+    this.entriesCache ??= this.entriesOf(this.node)
+    return this.entriesCache
   }
 
   // ---- reading -----------------------------------------------------------------
@@ -133,7 +200,9 @@ export class Cursor {
     const out: Cursor[] = []
     if (isSeq(this.node)) {
       this.node.items.forEach((item, index) => {
-        out.push(new Cursor(this.ctx, (item ?? null) as Node | null, [...this.path, index], String(index)))
+        out.push(
+          new Cursor(this.ctx, (item ?? null) as Node | null, [...this.path, index], String(index)),
+        )
       })
     }
     this.itemsCache = out
@@ -292,6 +361,7 @@ export function cursorOver(
   node: Node | null,
   positions: Positions,
   diagnostics: Diagnostic[],
+  doc: Document,
 ): Cursor {
-  return new Cursor({ positions, diagnostics }, node, [], '')
+  return new Cursor({ positions, diagnostics, doc }, node, [], '')
 }
