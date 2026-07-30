@@ -142,6 +142,30 @@ code {
   margin-left: 0.5rem;
 }
 
+.version {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-decoration: none;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  transition:
+    color 0.15s var(--ease),
+    border-color 0.15s var(--ease);
+}
+
+.version:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+
+.version:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
 .foot {
   border-bottom: none;
   border-top: 1px solid var(--line);

@@ -1,11 +1,23 @@
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const coreSource = fileURLToPath(new URL('../core/src/index.ts', import.meta.url))
 
+// The app's OWN version, read from its manifest at build time.
+//
+// Not `@attache/core`'s exported VERSION, which is the tempting shortcut because the app
+// already imports it: the two packages version independently by design, and a header that
+// showed the core's number would be quietly wrong the first time only one of them shipped.
+const version: string = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+).version
+
 export default defineConfig({
   plugins: [react()],
+
+  define: { __APP_VERSION__: JSON.stringify(version) },
 
   // Relative, so ONE build serves every way this ships.
   //

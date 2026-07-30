@@ -33,6 +33,18 @@ export function App() {
         <h1>
           <Logo />
           Attaché <span className="tagline">an Envoy config workbench</span>
+          {/* Links to the release it came from, so "which version is this?" and "what
+              changed?" are the same click. Someone running an old `npx` copy can see they
+              are behind without leaving the tab. */}
+          <a
+            className="version"
+            href={`https://github.com/emmettl/attache/releases/tag/v${__APP_VERSION__}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            title={`Attaché ${__APP_VERSION__} — release notes`}
+          >
+            v{__APP_VERSION__}
+          </a>
         </h1>
         <Actions />
       </header>
