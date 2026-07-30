@@ -75,15 +75,27 @@ function pathSpecifier(c: Cursor): PathSpecifier {
   const safeRegex = c.field('safeRegex')
   if (safeRegex) {
     // `google_re2` is an empty marker message that has been a no-op since Envoy made RE2
-    // the only engine. Consumed so it does not surface as an unrecognised field.
-    safeRegex.field('googleRe2')
+    // the only engine. Acknowledged rather than merely fetched: the fetch alone left it as
+    // an untouched node, which the collector reported as an unrecognised field — so the
+    // comment that used to sit here claiming otherwise was, for every config that spelled
+    // the marker out, simply wrong.
+    safeRegex.field('googleRe2')?.acknowledge()
     const regex = safeRegex.strAt('regex')
     if (regex !== undefined) return { kind: 'safeRegex', value: regex }
   }
 
-  // Read so they are not reported as unrecognised, but not evaluated.
-  if (c.field('connectMatcher')) return { kind: 'unmodelled', label: 'connect_matcher' }
-  if (c.field('pathMatchPolicy')) return { kind: 'unmodelled', label: 'path_match_policy' }
+  // Recognised, and left at that: neither is evaluated, and the route tester says so when a
+  // route carrying one comes up.
+  const connect = c.field('connectMatcher')
+  if (connect) {
+    connect.acknowledge()
+    return { kind: 'unmodelled', label: 'connect_matcher' }
+  }
+  const policy = c.field('pathMatchPolicy')
+  if (policy) {
+    policy.acknowledge()
+    return { kind: 'unmodelled', label: 'path_match_policy' }
+  }
 
   return { kind: 'none' }
 }
@@ -127,7 +139,7 @@ function headerMatcher(c: Cursor): HeaderMatcher {
     if (value === undefined) {
       const safeRegex = stringMatch.field('safeRegex')
       if (safeRegex) {
-        safeRegex.field('googleRe2')
+        safeRegex.field('googleRe2')?.acknowledge()
         const regex = safeRegex.strAt('regex')
         if (regex !== undefined) {
           kind = 'safeRegex'
@@ -157,7 +169,7 @@ function headerMatcher(c: Cursor): HeaderMatcher {
   if (value === undefined) {
     const safeRegexMatch = c.field('safeRegexMatch')
     if (safeRegexMatch) {
-      safeRegexMatch.field('googleRe2')
+      safeRegexMatch.field('googleRe2')?.acknowledge()
       const regex = safeRegexMatch.strAt('regex')
       if (regex !== undefined) {
         kind = 'safeRegex'
@@ -173,10 +185,12 @@ function headerMatcher(c: Cursor): HeaderMatcher {
     if (present !== undefined) return { ...sourced(c), name, kind: 'present', invert: invert !== present, treatMissingAsEmpty }
   }
 
-  // A matcher with a name and nothing else is a presence check.
-  if (value === undefined && kind === 'unmodelled' && !c.field('rangeMatch')) {
-    kind = 'present'
-  }
+  // A matcher with a name and nothing else is a presence check. A `range_match` is the one
+  // arm left: recognised, not evaluated, and reported as such rather than as a field this
+  // package has never heard of.
+  const rangeMatch = c.field('rangeMatch')
+  if (rangeMatch) rangeMatch.acknowledge()
+  else if (value === undefined && kind === 'unmodelled') kind = 'present'
 
   return { ...sourced(c), name, kind, value, invert, treatMissingAsEmpty }
 }
@@ -438,11 +452,29 @@ function cluster(c: Cursor): Cluster {
 
   // Presence, not contents. Whether a cluster has health checking at all is worth showing
   // next to it in the graph; whether the interval is sensible is a judgement this package
-  // is not in a position to make, and the fields stay reported as unchecked.
+  // is not in a position to make, so each of these is acknowledged and left alone.
+  //
+  // `eds_cluster_config` is read for one bit — that this cluster's endpoints come from EDS,
+  // which is what makes an empty `endpoints` expected rather than suspicious — and its
+  // config source is somebody else's business. It joins the list because a node read for a
+  // single fact is still a node nothing has checked.
+  //
+  // `typed_extension_protocol_options` is here because a real config had one on every
+  // cluster: it is where upstream HTTP/2 settings live nowadays, it is entirely ordinary,
+  // and having it named as a field Attaché had never heard of was exactly the overstatement
+  // this split is for.
   const healthChecks = c.field('healthChecks')
   const circuitBreakers = c.field('circuitBreakers')
   const outlierDetection = c.field('outlierDetection')
-  for (const block of [healthChecks, circuitBreakers, outlierDetection]) block?.unmodelled()
+  for (const block of [
+    healthChecks,
+    circuitBreakers,
+    outlierDetection,
+    eds,
+    c.field('typedExtensionProtocolOptions'),
+  ]) {
+    block?.acknowledge()
+  }
 
   return {
     ...sourced(c),

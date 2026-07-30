@@ -52,10 +52,12 @@ Attaché models the listener → filter chain → route → cluster spine, becau
 decides where a request goes. It does not model access loggers, tracing, circuit breakers,
 health checks, or most HTTP filters.
 
-**It says so, every time.** Every field outside the model is reported as unrecognised and
-counted next to the findings. Nothing in the interface ever prints "valid" or shows a green
-tick, and there is no code path that could — the most it will say is that it found nothing
-wrong *in the part it checked*, with the size of the part it did not check right beside it.
+**It says so, every time.** Every field it did not check is counted next to the findings,
+split into the two things that can mean: *unrecognised*, outside the model altogether, and
+*read but not checked* — health checks, circuit breakers, the innards of a filter it has
+already named for you. Nothing in the interface ever prints "valid" or shows a green tick,
+and there is no code path that could — the most it will say is that it found nothing wrong
+*in the part it checked*, with the size of the part it did not check right beside it.
 
 That constraint is structural rather than a matter of discipline. The reader in
 `packages/core/src/cursor.ts` records every field the model builder asks for; whatever is

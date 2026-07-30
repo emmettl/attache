@@ -1,4 +1,4 @@
-import { docsForCode, formatPath, type Severity } from '@attache/core'
+import { docsForCode, formatPath, type Severity, type Unknown } from '@attache/core'
 import { useMemo, useState } from 'react'
 import { useStore } from './store.js'
 
@@ -9,6 +9,12 @@ import { useStore } from './store.js'
 // it did, and putting that count anywhere less prominent than the findings themselves would
 // quietly convert "I found nothing" into "there is nothing", which is the one claim this
 // app must never make.
+//
+// Two lists rather than one, because the single list was making two claims at once and
+// leaning on the more alarming of them. A field Attaché has never heard of and a field it
+// read and declined to judge are different admissions, and a config full of health checks
+// and circuit breakers — which is to say any config that has been in production for a while
+// — was being told the tool understood far less of it than it does.
 
 const SEVERITIES: Severity[] = ['error', 'warning', 'info']
 
@@ -54,6 +60,9 @@ export function Findings() {
 
   const filtering = hidden.size > 0 || query.trim() !== ''
 
+  const unrecognised = useMemo(() => unknowns.filter((u) => u.kind === 'unrecognised'), [unknowns])
+  const unvalidated = useMemo(() => unknowns.filter((u) => u.kind === 'unvalidated'), [unknowns])
+
   return (
     <div className="panel-body">
       {diagnostics.length > 0 && (
@@ -84,8 +93,8 @@ export function Findings() {
       {diagnostics.length === 0 ? (
         <p className="muted">
           Nothing wrong in the part of this config Attaché models. That is not the same as a
-          valid config — see the {unknowns.length} unrecognised{' '}
-          {unknowns.length === 1 ? 'field' : 'fields'} below.
+          valid config — see the {unknowns.length} {unknowns.length === 1 ? 'field' : 'fields'}{' '}
+          below that it did not check.
         </p>
       ) : shown.length === 0 ? (
         <p className="muted">{diagnostics.length} findings, none matching this filter.</p>
@@ -133,31 +142,76 @@ export function Findings() {
 
       <details className="unknowns" open={diagnostics.length === 0 && !filtering}>
         <summary>
-          {unknowns.length} {unknowns.length === 1 ? 'field' : 'fields'} Attaché does not model
-          {unknowns.length > 0 && ' — not checked either way'}
+          {unknowns.length} {unknowns.length === 1 ? 'field' : 'fields'} Attaché did not check
         </summary>
         <p className="muted">
           Attaché models the listener → filter chain → route → cluster spine, because that is
-          what decides where a request goes. Everything below is real Envoy configuration that
-          it read past without an opinion. Its being here is not a complaint about your config.
+          what decides where a request goes. Everything below is real Envoy configuration it
+          had no opinion about. Its being here is not a complaint about your config.
         </p>
-        <ul className="unknown-list">
-          {unknowns.map((u, i) => (
-            <li key={i}>
-              <button
-                onClick={() => revealLine(u.range.line)}
-                onMouseEnter={() =>
-                  setHighlight({ startLine: u.range.line, endLine: u.range.endLine })
-                }
-                onMouseLeave={() => setHighlight(null)}
-              >
-                <code>{formatPath(u.path)}</code>
-                <span className="line-ref">line {u.range.line}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+
+        <UnknownGroup
+          heading={`${unrecognised.length} ${unrecognised.length === 1 ? 'field' : 'fields'} unrecognised`}
+          blurb="Outside the model altogether. Attaché cannot tell you whether one of these is a corner of Envoy it has never modelled or a field name you have spelled wrong — only that nothing here asked for it."
+          unknowns={unrecognised}
+          revealLine={revealLine}
+          setHighlight={setHighlight}
+        />
+
+        <UnknownGroup
+          heading={`${unvalidated.length} read but not checked`}
+          blurb="Recognised, and deliberately left alone. Health checks, circuit breakers, the innards of a filter Attaché has already named for you — real configuration whose correctness is not a judgement this can make."
+          unknowns={unvalidated}
+          revealLine={revealLine}
+          setHighlight={setHighlight}
+        />
       </details>
     </div>
+  )
+}
+
+/**
+ * One of the two lists, or nothing at all when it is empty.
+ *
+ * An empty group is dropped rather than rendered with a zero, because a heading reading
+ * "0 fields unrecognised" is a green tick with extra steps — and the whole point of this
+ * panel is that there is nowhere in it for one of those to appear.
+ */
+function UnknownGroup({
+  heading,
+  blurb,
+  unknowns,
+  revealLine,
+  setHighlight,
+}: {
+  heading: string
+  blurb: string
+  unknowns: Unknown[]
+  revealLine: (line: number) => void
+  setHighlight: (block: { startLine: number; endLine: number } | null) => void
+}) {
+  if (unknowns.length === 0) return null
+
+  return (
+    <section className="unknown-group">
+      <h3>{heading}</h3>
+      <p className="muted">{blurb}</p>
+      <ul className="unknown-list">
+        {unknowns.map((u, i) => (
+          <li key={i}>
+            <button
+              onClick={() => revealLine(u.range.line)}
+              onMouseEnter={() =>
+                setHighlight({ startLine: u.range.line, endLine: u.range.endLine })
+              }
+              onMouseLeave={() => setHighlight(null)}
+            >
+              <code>{formatPath(u.path)}</code>
+              <span className="line-ref">line {u.range.line}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

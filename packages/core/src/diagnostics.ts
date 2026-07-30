@@ -59,7 +59,29 @@ export interface Diagnostic {
 }
 
 /**
- * A field this package does not model.
+ * Which of two rather different claims a leftover field is making.
+ *
+ * These were one number for a long time, and on a real production config that number read
+ * "49 fields not checked" when about half of them were fields Attaché reads perfectly well
+ * and has merely declined to have an opinion about — a cluster's `health_checks`, an
+ * `outlier_detection` block, the `typed_config` of a filter it had already named for you.
+ *
+ * Overstating its own ignorance is the mirror image of the failure the rest of this file
+ * exists to prevent, and it is not a harmless error in the safe direction. It costs the
+ * number its only use: a list where half the entries are already handled is not a backlog
+ * of things to model, it is something you learn to scroll past — and once somebody is
+ * scrolling past the unrecognised list, the honesty it was buying is gone.
+ *
+ * `unrecognised` means the model builder never asked for this field. It might be a typo,
+ * it might be a corner of Envoy's schema nobody has modelled yet, and Attaché genuinely
+ * cannot tell you which. `unvalidated` means it went and looked, knows what the field is,
+ * and stopped there: the contents are real configuration and this package is not in a
+ * position to judge them.
+ */
+export type UnknownKind = 'unrecognised' | 'unvalidated'
+
+/**
+ * A field this package did not check, and why not.
  *
  * The reason this type exists at all, rather than such fields being quietly skipped: a
  * curated subset of Envoy's schema can only be honest if it says where its edges are.
@@ -73,6 +95,8 @@ export interface Diagnostic {
 export interface Unknown {
   /** The field name as it was actually written in the source. */
   key: string
+  /** Whether this is an edge of the model, or an edge of its remit. */
+  kind: UnknownKind
   path: ConfigPath
   range: Range
 }
@@ -86,6 +110,11 @@ export const isError = (d: Diagnostic): boolean => d.severity === 'error'
  * that produces one. The most this package will ever say is that it found nothing wrong in
  * the part it understands, and the count of what it did not understand is right there next
  * to it so that claim cannot be read as more than it is.
+ *
+ * Two counts rather than one, for the reason set out on `UnknownKind`: a single figure had
+ * to stand for both "there are fields here I have never heard of" and "there are fields
+ * here I know and am not judging", and it inflated the first at the expense of anyone
+ * believing either.
  */
 export function summarise(diagnostics: readonly Diagnostic[], unknowns: readonly Unknown[]): string {
   const errors = diagnostics.filter((d) => d.severity === 'error').length
@@ -96,10 +125,24 @@ export function summarise(diagnostics: readonly Diagnostic[], unknowns: readonly
   if (warnings > 0) parts.push(`${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`)
   if (parts.length === 0) parts.push('nothing wrong in what I checked')
 
-  const notChecked =
-    unknowns.length === 0
-      ? 'nothing unrecognised'
-      : `${unknowns.length} ${unknowns.length === 1 ? 'field' : 'fields'} not checked`
+  const unrecognised = unknowns.filter((u) => u.kind === 'unrecognised').length
+  const unvalidated = unknowns.length - unrecognised
 
-  return `${parts.join(', ')} · ${notChecked}`
+  const edges: string[] = []
+  if (unrecognised > 0) {
+    edges.push(`${unrecognised} ${unrecognised === 1 ? 'field' : 'fields'} unrecognised`)
+  }
+  // No noun on the second count when the first is already carrying one, so the common case
+  // reads as one thought — "24 fields unrecognised · 25 read but not checked" — rather than
+  // as two separate tallies that happen to be adjacent.
+  if (unvalidated > 0) {
+    edges.push(
+      unrecognised > 0
+        ? `${unvalidated} read but not checked`
+        : `${unvalidated} ${unvalidated === 1 ? 'field' : 'fields'} read but not checked`,
+    )
+  }
+  if (edges.length === 0) edges.push('nothing unrecognised')
+
+  return `${parts.join(', ')} · ${edges.join(' · ')}`
 }

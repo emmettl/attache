@@ -48,11 +48,23 @@ This models the listener → filter chain → route → cluster spine — what d
 request goes. It does not model access loggers, tracing, circuit breakers, health checks or
 most HTTP filters.
 
-`analyse` returns `unknowns` alongside `diagnostics`: every field outside the model, at the
+`analyse` returns `unknowns` alongside `diagnostics`: every field it did not check, at the
 shallowest point it occurs. **Do not drop that array.** A checker covering a subset of
 Envoy's schema is only honest if the size of the part it did not check travels with its
 findings, and `summarise()` deliberately has no success state for the same reason — the
 most it will say is "nothing wrong in what I checked", with the unchecked count beside it.
+
+Each carries a `kind`, because "I did not check this" covers two claims that are worth
+keeping apart:
+
+| | |
+|---|---|
+| `unrecognised` | Nothing here asked for this field. It may be a corner of Envoy's schema this does not model, or a name spelled wrong, and this cannot tell you which. |
+| `unvalidated` | Read, recognised, and not judged — `health_checks`, `circuit_breakers`, the `typed_config` of an extension it named but does not evaluate. |
+
+They were one number until a real config reported "49 fields not checked" with about half
+of them in the second category. Overstating what it does not understand is the same failure
+as understating it, and it is the one that makes the count worth ignoring.
 
 The mechanism is in `src/cursor.ts`. The model builder reads through a cursor that records
 every field asked for; the leftovers *are* the unknown list. There is no hand-maintained set

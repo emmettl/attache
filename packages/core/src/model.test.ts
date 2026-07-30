@@ -70,8 +70,9 @@ static_resources:
     address:
       socket_address: { address: 0.0.0.0, port_value: 10000 }
 `)
-    const keys = unknowns.map((u) => u.key)
-    expect(keys).toContain('invented_field')
+    expect(unknowns).toContainEqual(
+      expect.objectContaining({ key: 'invented_field', kind: 'unrecognised' }),
+    )
   })
 
   test('a field the model does know about is not reported', () => {
@@ -80,6 +81,58 @@ static_resources:
     expect(keys).not.toContain('route_config')
     expect(keys).not.toContain('port_value')
     expect(keys).not.toContain('virtual_hosts')
+  })
+
+  test('a field read and deliberately not judged is not called unrecognised', () => {
+    const { unknowns } = analyse(`
+static_resources:
+  clusters:
+  - name: api_service
+    type: STATIC
+    health_checks:
+    - timeout: 1s
+      interval: 5s
+      http_health_check: { path: /healthz }
+    circuit_breakers:
+      thresholds:
+      - max_connections: 100
+`)
+    // Both are ordinary production configuration that Attaché reads for its presence. Being
+    // told they are fields it has never heard of is the overstatement the split is for.
+    expect(unknowns.map((u) => [u.key, u.kind])).toEqual([
+      ['health_checks', 'unvalidated'],
+      ['circuit_breakers', 'unvalidated'],
+    ])
+  })
+
+  test('an empty marker message is not counted as a field at all', () => {
+    const { unknowns } = analyse(`
+static_resources:
+  listeners:
+  - name: listener_0
+    address:
+      socket_address: { address: 0.0.0.0, port_value: 10000 }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress
+          route_config:
+            name: local
+            virtual_hosts:
+            - name: vh
+              domains: ["*"]
+              routes:
+              - match:
+                  safe_regex:
+                    google_re2: {}
+                    regex: "/v[0-9]+/.*"
+                direct_response: { status: 200 }
+`)
+    // `google_re2` has no fields and never had any behaviour. Counting it would pad the one
+    // number this tool asks to be taken seriously.
+    expect(unknowns.map((u) => u.key)).not.toContain('google_re2')
   })
 
   test('an unmodelled filter is one finding, not one per field inside it', () => {
@@ -102,6 +155,9 @@ static_resources:
     const inside = unknowns.filter((u) => formatPath(u.path).includes('typed_config'))
     expect(inside).toHaveLength(1)
     expect(inside[0]!.key).toBe('typed_config')
+    // Attaché read as far as the `@type`, recognised a filter it has no model for, and
+    // stopped. That is a limit of its remit, not a gap in its schema.
+    expect(inside[0]!.kind).toBe('unvalidated')
   })
 
   test('the summary never claims the config is valid', () => {
@@ -119,11 +175,26 @@ static_resources:
 static_resources:
   listeners: []
   clusters: []
-admin:
-  address:
-    socket_address: { address: 127.0.0.1, port_value: 9901 }
+stats_sinks:
+- name: envoy.stat_sinks.statsd
 `)
-    expect(summary).toMatch(/1 field not checked/)
+    expect(summary).toMatch(/1 field unrecognised/)
+  })
+
+  test('the summary keeps the two kinds apart', () => {
+    const { summary } = analyse(`
+static_resources:
+  clusters:
+  - name: api_service
+    type: STATIC
+    health_checks:
+    - timeout: 1s
+    tracing_config_i_invented:
+      enabled: true
+`)
+    expect(summary).toMatch(/1 field unrecognised · 1 read but not checked/)
+    // Still no success state anywhere in it, however the counts fall.
+    expect(summary).not.toMatch(/valid|✓|ok\b/i)
   })
 })
 

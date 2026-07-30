@@ -179,6 +179,35 @@ export class Cursor {
     return child
   }
 
+  /**
+   * Every field of a map, each marked as read, with the name it was written under.
+   *
+   * For proto `map<string, …>` fields, where the key is data rather than schema. Envoy has
+   * a handful and `typed_per_filter_config` is the one that matters here: it is keyed by
+   * filter name, so there is no fixed set of names to hand `field()`, and the names are
+   * precisely what is worth knowing — a route that switches `ext_authz` off is a routing
+   * fact even though the filter's own configuration is not modelled.
+   *
+   * Everywhere else the builder asks for named fields exactly so that a name nobody asked
+   * for gets reported, and reaching for this on an ordinary message would quietly opt that
+   * message out of the whole mechanism. It is only for the places Envoy's schema genuinely
+   * has open keys.
+   */
+  fields(): { name: string; cursor: Cursor }[] {
+    this.touched = true
+    const out: { name: string; cursor: Cursor }[] = []
+    for (const entry of this.entries()) {
+      this.seen.add(entry.camel)
+      let child = this.children.get(entry.camel)
+      if (!child) {
+        child = new Cursor(this.ctx, entry.value, [...this.path, entry.raw], entry.raw)
+        this.children.set(entry.camel, child)
+      }
+      out.push({ name: entry.raw, cursor: child })
+    }
+    return out
+  }
+
   /** As `field`, but records a diagnostic when it is missing. */
   require(name: string, why?: string): Cursor | undefined {
     const found = this.field(name)
@@ -251,6 +280,32 @@ export class Cursor {
   }
 
   /**
+   * Mark this node as read, and deliberately not judged.
+   *
+   * "I know what this is, and I am not looking inside it." A cluster's `health_checks` is
+   * the case to hold in mind: whether health checking is configured at all belongs beside
+   * the cluster in the graph, and whether a two-second interval against that upstream is
+   * sensible is a judgement nobody in a browser tab can make. So the block is read for its
+   * presence and its contents are left alone.
+   *
+   * The distinction from never asking for the field matters more than it looks. A node
+   * nobody touched is reported as `unrecognised`, which is a claim about how much of
+   * Envoy's schema this package covers; this one is reported as `unvalidated`, which is a
+   * claim about what it is willing to have an opinion on. Rolling the two together is how a
+   * config carrying a dozen perfectly ordinary health check blocks came to be described as
+   * fifty fields Attaché did not understand.
+   *
+   * What this is emphatically NOT is a way to make a field stop being reported. The node
+   * stays in the list, counted and linkable, and only the sentence beside it changes. Using
+   * it to quiet something down would convert "not checked" into "checked", which is the one
+   * move this whole mechanism exists to make impossible.
+   */
+  acknowledge(): void {
+    this.touched = true
+    this.wholesale = true
+  }
+
+  /**
    * Mark this node as understood-but-not-modelled.
    *
    * For the case where the builder must read enough to know it cannot go further — a
@@ -258,10 +313,16 @@ export class Cursor {
    * this the node would count as touched, and its every inner field would be reported
    * separately: forty findings about one filter nobody asked about. One finding naming the
    * filter is the useful form.
+   *
+   * Reports identically to `acknowledge()`, and that is not an oversight. Both say the same
+   * thing to the person reading the list: Attaché got here, knows what it is looking at,
+   * and went no further. That one limit was discovered mid-read and the other decided in
+   * advance is a fact about this file, not about their config. The two names are kept apart
+   * because they document different intentions at the call site, which is where the
+   * difference is worth having.
    */
   unmodelled(): void {
-    this.touched = true
-    this.wholesale = true
+    this.acknowledge()
   }
 
   // ---- scalars -----------------------------------------------------------------
@@ -362,6 +423,13 @@ export class Cursor {
 
   // ---- leftovers ---------------------------------------------------------------
 
+  /** Whether this node has nothing under it at all. */
+  private get vacant(): boolean {
+    if (isMap(this.node)) return this.entries().length === 0
+    if (isSeq(this.node)) return this.node.items.length === 0
+    return false
+  }
+
   /**
    * Everything below this node that the builder never interpreted.
    *
@@ -377,16 +445,36 @@ export class Cursor {
       // Scalars are values, not structure. Reporting `stat_prefix: ingress_http` as an
       // unrecognised field when what is unrecognised is the enclosing filter would bury
       // the useful finding under its own details.
-      if (!isScalar(this.node)) {
-        into.push({ key: this.key, path: this.path, range: this.range })
-      }
+      if (isScalar(this.node)) return into
+
+      // An acknowledged node with nothing in it has nothing to withhold judgement about.
+      // `google_re2: {}` is why this is here: it is an empty marker message that has been a
+      // no-op since RE2 became Envoy's only regex engine, the builder reads it on purpose,
+      // and counting a message with no fields as a field read-but-not-checked is padding
+      // the very number this file spends so much effort keeping meaningful. An UNTOUCHED
+      // empty node is still reported — `whatever: {}` is a field nobody here has heard of,
+      // and its being empty says nothing about that.
+      if (this.wholesale && this.vacant) return into
+
+      into.push({
+        key: this.key,
+        kind: this.wholesale ? 'unvalidated' : 'unrecognised',
+        path: this.path,
+        range: this.range,
+      })
       return into
     }
 
     if (isMap(this.node)) {
       for (const entry of this.entries()) {
         if (this.seen.has(entry.camel)) continue
-        into.push({ key: entry.raw, path: [...this.path, entry.raw], range: entry.keyRange })
+        // Nobody asked for this one, so nothing here knows what it is.
+        into.push({
+          key: entry.raw,
+          kind: 'unrecognised',
+          path: [...this.path, entry.raw],
+          range: entry.keyRange,
+        })
       }
       for (const child of this.children.values()) child.collectUnknowns(into)
     } else if (isSeq(this.node)) {

@@ -561,6 +561,25 @@ code {
   font-weight: 600;
 }
 
+/* The two groups read as one list unless you are looking for the seam, which is the
+   intent: they are two answers to "what did you not check", not two unrelated sections. */
+.unknown-group + .unknown-group {
+  margin-top: 0.8rem;
+}
+
+.unknown-group h3 {
+  margin: 0.5rem 0 0.15rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+}
+
+.unknown-group p {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+}
+
 .unknown-list button {
   display: flex;
   gap: 0.6rem;
