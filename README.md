@@ -152,6 +152,19 @@ can never match, the cluster nothing reaches, the filter after the router.
 And it ends by saying how much of the config it checked, which is the part no validator
 tells you. There is no green tick in it either.
 
+The route tester is there too, which is the part a validator structurally cannot do — being
+accepted by Envoy and still sending `/v1/users` somewhere new are not in tension:
+
+```bash
+npx @attache/cli route envoy.yaml --authority api.example.com --path /v1/users \
+  --expect-cluster api_service
+```
+
+It prints every candidate that lost with the reason, exits non-zero when the expectation
+breaks, and — where the answer cannot be certain, as with a weighted split or a
+`runtime_fraction` route — says so above the tick rather than letting a green check mean
+"about half the time".
+
 ## Building it
 
 ```bash
