@@ -19,6 +19,15 @@ export default defineConfig({
   // og:image.
   base: './',
 
+  // The default 500kB warning fires on a bundle whose size is a decision rather than an
+  // accident: CodeMirror is most of it, it was measured before being taken, and it comes
+  // to 659kB raw but 210kB gzipped and 179kB brotli — which is what GitHub Pages actually
+  // serves. Code-splitting it would not help, because the editor is the first thing on
+  // screen and there is nothing to defer it behind.
+  //
+  // Raised rather than silenced, so a bundle that doubles again still says so.
+  build: { chunkSizeWarningLimit: 800 },
+
   resolve: {
     alias: {
       // Point at the core's SOURCE, not its built dist.

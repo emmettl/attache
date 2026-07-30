@@ -30,6 +30,18 @@
   --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* Syntax colours, referenced by variable from the CodeMirror HighlightStyle in
+     Editor.tsx. CodeMirror compiles a highlight style into a stylesheet once, so a theme
+     with literal colours in it could not follow prefers-color-scheme — pointing at
+     variables hands theming back to CSS, where the rest of the app's already lives. */
+  --syn-key: #0b5fa5;
+  --syn-string: #0a6b53;
+  --syn-number: #9a4b00;
+  --syn-atom: #7b3fb8;
+  --syn-comment: #6b7688;
+  --syn-punct: #7b8494;
+  --syn-meta: #a0410a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -52,6 +64,14 @@
     --shadow-2: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 20px rgb(0 0 0 / 0.36);
     --shadow-3: 0 4px 10px rgb(0 0 0 / 0.4), 0 20px 48px rgb(0 0 0 / 0.55);
     --edge-light: inset 0 1px 0 rgb(255 255 255 / 0.06);
+
+    --syn-key: #8fc7ff;
+    --syn-string: #7fd8b0;
+    --syn-number: #f0b878;
+    --syn-atom: #cbaaf5;
+    --syn-comment: #6f7b8d;
+    --syn-punct: #7d8798;
+    --syn-meta: #f2a678;
   }
 }
 
@@ -210,109 +230,52 @@ code {
   border-radius: 4px;
 }
 
-/* ---- editor -------------------------------------------------------------- */
+/* ---- editor (CodeMirror) ------------------------------------------------- */
 
 .editor {
-  display: flex;
   flex: 1;
   min-height: 0;
-  font-family: var(--mono);
-  font-size: 13px;
-}
-
-.gutter {
-  flex: none;
-  width: 3.4rem;
   overflow: hidden;
-  padding: 0.6rem 0;
-  text-align: right;
-  background: var(--bg-sunken);
-  border-right: 1px solid var(--line);
-  color: var(--ink-soft);
-  user-select: none;
-}
-
-.gutter-line {
-  height: var(--line-height);
-  line-height: var(--line-height);
-  padding-right: 0.5rem;
-}
-
-.gutter-line.error {
-  color: var(--error);
-  font-weight: 700;
-  background: color-mix(in srgb, var(--error) 14%, transparent);
-}
-
-.gutter-line.warning {
-  color: var(--warning);
-  font-weight: 700;
-  background: color-mix(in srgb, var(--warning) 14%, transparent);
-}
-
-.gutter-line.info {
-  color: var(--info);
-}
-
-.source-wrap {
-  position: relative;
-  flex: 1;
-  min-width: 0;
   background: var(--bg);
 }
 
-/* The band layer, behind the text. Clipped to the pane and moved by hand from the
-   textarea's scroll handler — it must never have scrollbars of its own. */
-.bands {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.bands-inner {
-  position: absolute;
-  inset: 0;
-  will-change: transform;
-}
-
-.band {
-  position: absolute;
-  left: 0;
-  right: 0;
-  min-width: 100%;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border-left: 3px solid var(--accent);
-  border-radius: 0 4px 4px 0;
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--accent) 28%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent) 28%, transparent);
-  animation: band-in 0.14s var(--ease);
-}
-
-@keyframes band-in {
-  from {
-    opacity: 0;
-  }
-}
-
-.source {
-  position: relative;
-  width: 100%;
+.editor .cm-editor {
   height: 100%;
-  padding: 0.6rem 0.7rem;
-  border: none;
-  outline: none;
-  resize: none;
-  /* Transparent, so the bands behind show through. The pane's own background is on
-     `.source-wrap`. */
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  line-height: var(--line-height);
-  white-space: pre;
-  overflow: auto;
-  tab-size: 2;
+}
+
+/* The banded block: what a graph node or a finding points at in the source.
+   Line decorations rather than a separately-positioned overlay, so the band is laid out by
+   the editor itself and cannot drift out of alignment with the text when the font, the
+   zoom or a wrapped line changes it. */
+.cm-band {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.cm-band-start {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.cm-band-end {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 -1px 0 color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* A line something was said about. Tinted rather than underlined, because a squiggle under
+   YAML competes with the indentation guides the eye is already following. */
+.cm-diag-error {
+  background: color-mix(in srgb, var(--error) 13%, transparent);
+}
+
+.cm-diag-warning {
+  background: color-mix(in srgb, var(--warning) 13%, transparent);
+}
+
+.cm-diag-info {
+  background: color-mix(in srgb, var(--info) 10%, transparent);
 }
 
 .examples {
