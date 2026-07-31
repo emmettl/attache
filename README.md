@@ -2,16 +2,32 @@
 
 # Attaché
 
-An Envoy config workbench that runs in a browser tab. Paste a bootstrap YAML or an admin
-port `config_dump` and it will tell you what is wrong with it, draw what connects to what,
-and answer the question a config does not answer by being read: **where does this request
-actually go?**
+An Envoy config workbench. Give it a bootstrap YAML or an admin port `config_dump` and it
+will tell you what is wrong with it, draw what connects to what, and answer the question a
+config does not answer by being read: **where does this request actually go?**
+
+**Two ways to run it, over one engine.** The same parser, the same checks, the same route
+matching — the difference is what you get back.
+
+A workbench in a browser tab: findings against the source, the graph, and the route tester.
 
 ```bash
 npx @attache/app
 ```
 
-Or use the hosted copy at <https://emmettl.github.io/attache/>. They are the same build.
+Or the hosted copy at <https://emmettl.github.io/attache/>. They are the same build.
+
+A command that fails a build: every finding at once, each pointing at a line, and an exit
+code.
+
+```bash
+npx @attache/cli check envoy.yaml
+npx @attache/cli route envoy.yaml --authority api.example.com --path /v1/users \
+  --expect-cluster api_service
+```
+
+Neither uploads anything, and neither needs a network or an Envoy binary. That is not a
+side effect of how they are built — see [Your config stays put](#your-config-stays-put).
 
 ## Why it exists
 
@@ -34,7 +50,8 @@ leaving the machine.
 cluster references, duplicate names, two listeners on one port, routes that can never
 match. Each one points at a line.
 
-**Graph.** The listener → filter chain → route config → virtual host → route → cluster →
+**Graph.** The browser tab only — a diagram is not something a build log wants. The
+listener → filter chain → route config → virtual host → route → cluster →
 endpoint cascade, with dangling references drawn as dashed and orphaned clusters flagged.
 A cluster is reached by more than routes, so the edges include the ones that are not: a
 `tcp_proxy` chain, an authorization filter, a gRPC access logger, a `request_mirror_policies`
@@ -56,6 +73,28 @@ about the winner.
 > Ask the *Virtual host precedence* example for `www.foo.com`. Four virtual hosts match it.
 > Envoy takes the most specific, not the first written, and moving them around in the file
 > changes nothing.
+
+## In CI
+
+`check` reports every finding at once, each pointing at a line, each saying why it matters.
+Under GitHub Actions it emits workflow commands by default, so they arrive as annotations on
+the diff with nothing to configure; `--format sarif` sends them to the Security tab instead,
+and `--format json` is a versioned shape for anything else.
+
+This does not replace `envoy --mode validate`, and [says so](packages/cli). That needs the
+Envoy binary, at a version matching production, built for the platform the job runs on, and
+it reports the first thing that stopped the boot. This needs Node, reports everything at
+once, and catches the whole relational class Envoy is perfectly happy with — the route that
+can never match, the cluster nothing reaches, the filter after the router.
+
+And it ends by saying how much of the config it checked, which is the part no validator
+tells you. There is no green tick in it either.
+
+`route` is the part a validator structurally cannot do at all — being accepted by Envoy and
+still sending `/v1/users` somewhere new are not in tension. It prints every candidate that
+lost with the reason, exits non-zero when `--expect-cluster` or `--expect-outcome` breaks,
+and — where the answer cannot be certain, as with a weighted split or a `runtime_fraction`
+route — says so above the tick rather than letting a green check mean "about half the time".
 
 ## What it does not do
 
@@ -87,7 +126,8 @@ second list carries.
 
 ## Your config stays put
 
-Everything runs in the tab. Nothing is uploaded, and there is no server to upload it to.
+Everything runs in the tab, or on the machine running the command. Nothing is uploaded, and
+there is no server to upload it to.
 
 `npx @attache/app` binds to `127.0.0.1` and serves a prebuilt bundle off disk using nothing
 but Node built-ins — no runtime dependencies, one small tarball. That route exists because
@@ -133,39 +173,6 @@ The split is the point, and the CLI is what collects on it: the core is data-in,
 so the command is argument parsing, four output formats and an exit code over the identical
 `analyse()` the browser calls. The app bundles the core from source, so an edit hot-reloads
 and a stale `dist/` can never quietly serve old matching logic.
-
-## In CI
-
-```bash
-npx @attache/cli check envoy.yaml
-```
-
-Every finding at once, each pointing at a line, each saying why it matters. Under GitHub
-Actions it emits workflow commands by default, so they arrive as annotations on the diff
-with nothing to configure; `--format sarif` sends them to the Security tab instead, and
-`--format json` is a versioned shape for anything else.
-
-This does not replace `envoy --mode validate`, and [says so](packages/cli). That needs the
-Envoy binary, at a version matching production, built for the platform the job runs on, and
-it reports the first thing that stopped the boot. This needs Node, reports everything at
-once, and catches the whole relational class Envoy is perfectly happy with — the route that
-can never match, the cluster nothing reaches, the filter after the router.
-
-And it ends by saying how much of the config it checked, which is the part no validator
-tells you. There is no green tick in it either.
-
-The route tester is there too, which is the part a validator structurally cannot do — being
-accepted by Envoy and still sending `/v1/users` somewhere new are not in tension:
-
-```bash
-npx @attache/cli route envoy.yaml --authority api.example.com --path /v1/users \
-  --expect-cluster api_service
-```
-
-It prints every candidate that lost with the reason, exits non-zero when the expectation
-breaks, and — where the answer cannot be certain, as with a weighted split or a
-`runtime_fraction` route — says so above the tick rather than letting a green check mean
-"about half the time".
 
 ## Building it
 
